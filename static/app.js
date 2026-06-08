@@ -12,6 +12,9 @@ let currentStarredFolder = "all";
 let currentReportFilter = "all";
 let selectedReportFolders = [];
 let selectedReportKeywords = [];
+let lastRenderedLogText = "";
+const FEED_FETCH_LIMIT = 40;
+const FEED_RENDER_LIMIT = 80;
 
 function updateFolderChips(chipsContainer, rowContainer, uniqueFolders, activeFolder, onFolderSelected) {
     if (!chipsContainer || !rowContainer) return;
@@ -1324,7 +1327,7 @@ async function loadFeeds() {
         let docs = [];
         let trends = [];
         
-        let queryParams = `profile_id=${currentProfileId}&search=${encodeURIComponent(search)}`;
+        let queryParams = `profile_id=${currentProfileId}&search=${encodeURIComponent(search)}&limit=${FEED_FETCH_LIMIT}`;
         
         if (activeFilter === "all" || activeFilter === "docs") {
             const res = await fetch(`/api/docs?${queryParams}`);
@@ -1347,6 +1350,7 @@ async function loadFeeds() {
         trends.forEach(t => items.push({ ...t, type: 'trend' }));
         
         items.sort((a, b) => getFeedSortTime(b) - getFeedSortTime(a));
+        items = items.slice(0, FEED_RENDER_LIMIT);
         
         // Render
         DOM.feedItemsGrid.innerHTML = "";
@@ -1839,14 +1843,17 @@ async function pollLogsLoop() {
                 DOM.stopProcessBtn.classList.add("disabled");
             }
             
-            // 2. Stream logs
-            if (data.logs) {
+            // 2. Stream logs only while the logs tab is visible. Large scans can produce
+            // enough output to make other screens feel frozen if we re-render it every second.
+            const logsTabActive = document.querySelector("#logs-tab.active");
+            if (logsTabActive && data.logs && data.logs !== lastRenderedLogText) {
+                lastRenderedLogText = data.logs;
                 // Check if scroll is near bottom before update
                 const terminal = DOM.terminalOutputBody;
                 const wasAtBottom = terminal.scrollHeight - terminal.clientHeight <= terminal.scrollTop + 50;
                 
                 // Set logs content
-                terminal.innerHTML = escapeHtml(data.logs);
+                terminal.textContent = data.logs;
                 
                 // Keep scroll at bottom if it was already there
                 if (wasAtBottom || data.status === "running") {
@@ -1859,7 +1866,7 @@ async function pollLogsLoop() {
     }
     
     // Loop
-    logPollTimer = setTimeout(pollLogsLoop, 1000);
+    logPollTimer = setTimeout(pollLogsLoop, 2000);
 }
 
 function updateRunStatus(status, label) {

@@ -332,11 +332,13 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
 @app.get("/api/status")
 async def get_status(request: Request):
     """Returns the status and current live logs."""
+    tail_logs = active_logs[-300:]
     return {
         "status": scan_status,
         "active_profile_id": active_profile_id,
         "is_admin": is_localhost(request),
-        "logs": "".join(active_logs)
+        "log_line_count": len(active_logs),
+        "logs": "".join(tail_logs)
     }
 
 @app.post("/api/scan")
@@ -828,4 +830,4 @@ else:
 
 if __name__ == "__main__":
     # Run the uvicorn web server
-    uvicorn.run("web_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("web_server:app", host="0.0.0.0", port=8000, reload=False)
