@@ -1197,9 +1197,33 @@ body {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 4px 0 6px;
+    padding: 8px 0 8px;
     color: var(--text-muted);
     font-size: 12px;
+}
+
+.cleanup-apply-btn {
+    border: 1px solid rgba(244, 63, 94, 0.62);
+    background: linear-gradient(135deg, rgba(244, 63, 94, 0.95), rgba(190, 24, 93, 0.92));
+    color: #fff;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 8px 18px rgba(244, 63, 94, 0.18);
+}
+
+.cleanup-apply-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(244, 63, 94, 0.26);
+}
+
+.cleanup-apply-btn:disabled {
+    opacity: 0.62;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
 }
 
 .keyword-suggestion-card {

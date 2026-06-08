@@ -825,11 +825,7 @@ function addKeywordTagElement(keyword) {
     
     // Remove handler
     tag.querySelector(".remove-tag").addEventListener("click", () => {
-        tag.remove();
-        // If the folder group has no tags left, remove the folder group div itself!
-        if (tagsContainer.children.length === 0) {
-            folderGroup.remove();
-        }
+        removeKeywordTagAndEmptyGroup(tag);
     });
     
     tagsContainer.appendChild(tag);
@@ -913,7 +909,7 @@ function renderKeywordSuggestions(data) {
     DOM.keywordSuggestionsList.innerHTML = suggestions.length ? `
         <div class="suggestions-bulk-actions">
             <button type="button" class="btn secondary tiny" id="add-all-suggested-keywords-btn">추천 키워드 모두 추가</button>
-            <span>${suggestions.length}개 추천</span>
+            <span>AI 추천 ${suggestions.length}개</span>
         </div>
         ${suggestions.map((item, idx) => `
         <div class="keyword-suggestion-card">
@@ -968,7 +964,10 @@ function renderKeywordSuggestions(data) {
     ` : "";
     
     DOM.keywordCleanupSuggestions.innerHTML = cleanupSuggestions.length ? `
-        <div class="suggestion-section-title">중복/표기 정리 제안</div>
+        <div class="suggestions-bulk-actions">
+            <div class="suggestion-section-title">중복/표기 정리 제안</div>
+            <button type="button" class="cleanup-apply-btn" id="apply-keyword-cleanup-btn">정리 제안 적용</button>
+        </div>
         ${cleanupSuggestions.map(item => `
             <div class="suggestion-note">
                 <strong>${escapeHtml(item.canonical || "")}</strong>
@@ -976,6 +975,22 @@ function renderKeywordSuggestions(data) {
             </div>
         `).join("")}
     ` : "";
+
+    const cleanupBtn = document.getElementById("apply-keyword-cleanup-btn");
+    if (cleanupBtn) {
+        cleanupBtn.addEventListener("click", () => {
+            const preview = cleanupSuggestions
+                .map(item => `${(item.duplicates || []).join(", ")} -> ${item.canonical}`)
+                .join("\n");
+            if (!confirm(`다음 중복/표기 정리 제안을 적용할까요?\n\n${preview}\n\n적용 후에는 프로필 설정 변경 저장을 눌러야 DB에 반영됩니다.`)) {
+                return;
+            }
+            const result = applyKeywordCleanupSuggestions(cleanupSuggestions);
+            cleanupBtn.textContent = `${result.changed}개 정리됨`;
+            cleanupBtn.setAttribute("disabled", "true");
+            DOM.keywordSuggestionsStatus.textContent = `정리 제안을 적용했습니다. ${result.changed}개 키워드가 정리되었고, ${result.removed}개 중복 태그가 제거되었습니다. 저장 버튼을 눌러 반영하세요.`;
+        });
+    }
 }
 
 function addSuggestedKeyword(item) {
@@ -987,6 +1002,55 @@ function addSuggestedKeyword(item) {
     ensureFolderOption(folder);
     addKeywordTag(item.keyword, folder);
     return true;
+}
+
+function applyKeywordCleanupSuggestions(cleanupSuggestions) {
+    let changed = 0;
+    let removed = 0;
+    
+    cleanupSuggestions.forEach(item => {
+        const canonical = (item.canonical || "").trim();
+        const duplicates = (item.duplicates || []).map(d => String(d).trim()).filter(Boolean);
+        if (!canonical || duplicates.length === 0) return;
+        
+        const tags = Array.from(DOM.keywordTagsContainer.querySelectorAll(".keyword-tag"));
+        const canonicalTag = tags.find(tag => (tag.getAttribute("data-keyword") || "").toLowerCase() === canonical.toLowerCase());
+        const duplicateTags = tags.filter(tag => duplicates.some(dup => (tag.getAttribute("data-keyword") || "").toLowerCase() === dup.toLowerCase()));
+        
+        if (canonicalTag) {
+            duplicateTags.forEach(tag => {
+                if (tag !== canonicalTag) {
+                    removeKeywordTagAndEmptyGroup(tag);
+                    removed += 1;
+                }
+            });
+            changed += duplicateTags.length ? 1 : 0;
+            return;
+        }
+        
+        const targetTag = duplicateTags[0];
+        if (!targetTag) return;
+        const folder = targetTag.getAttribute("data-folder") || "미분류";
+        removeKeywordTagAndEmptyGroup(targetTag);
+        addKeywordTag(canonical, folder);
+        changed += 1;
+        
+        duplicateTags.slice(1).forEach(tag => {
+            removeKeywordTagAndEmptyGroup(tag);
+            removed += 1;
+        });
+    });
+    
+    return { changed, removed };
+}
+
+function removeKeywordTagAndEmptyGroup(tag) {
+    if (!tag) return;
+    const folderGroup = tag.closest(".folder-group");
+    tag.remove();
+    if (folderGroup && folderGroup.querySelectorAll(".keyword-tag").length === 0) {
+        folderGroup.remove();
+    }
 }
 
 function addFeedRowElement(name, url) {
