@@ -3,6 +3,9 @@ import os
 import json
 import asyncio
 import platform
+import ssl
+import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
@@ -92,6 +95,12 @@ class KeywordSuggestionRequest(BaseModel):
     seed_keyword: str = ""
     keywords: List[KeywordItem] = []
 
+class FeedSuggestionRequest(BaseModel):
+    profile_id: int
+    seed_topic: str = ""
+    keywords: List[KeywordItem] = []
+    feeds: List[FeedItem] = []
+
 def extract_json_object(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -103,6 +112,80 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     if start >= 0 and end > start:
         cleaned = cleaned[start:end + 1]
     return json.loads(cleaned)
+
+def normalize_candidate_url(url: str) -> str:
+    cleaned = (url or "").strip()
+    if cleaned and not cleaned.startswith(("http://", "https://")):
+        cleaned = "https://" + cleaned
+    return cleaned
+
+def validate_monitoring_url(url: str) -> Dict[str, Any]:
+    """Fetches a small sample of a URL and classifies it as RSS/Atom, docs/blog page, or invalid."""
+    target_url = normalize_candidate_url(url)
+    if not target_url:
+        return {"status": "invalid", "kind": "unknown", "message": "URL이 비어 있습니다."}
+
+    parsed = urllib.parse.urlparse(target_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return {"status": "invalid", "kind": "unknown", "message": "URL 형식이 올바르지 않습니다."}
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) TechWatchTracker/1.0",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8",
+    }
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        req = urllib.request.Request(target_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
+            final_url = response.geturl()
+            status_code = getattr(response, "status", 200)
+            content_type = response.headers.get("content-type", "").lower()
+            sample = response.read(120000).decode("utf-8", errors="ignore").strip()
+    except Exception as e:
+        return {
+            "status": "invalid",
+            "kind": "unknown",
+            "url": target_url,
+            "message": f"접속 검증 실패: {e}"
+        }
+
+    sample_lower = sample[:2000].lower()
+    is_feed = (
+        "rss+xml" in content_type
+        or "atom+xml" in content_type
+        or "<rss" in sample_lower
+        or "<feed" in sample_lower
+        or "<rdf:rdf" in sample_lower
+    )
+    is_html = "text/html" in content_type or "<html" in sample_lower
+
+    if is_feed:
+        return {
+            "status": "verified",
+            "kind": "rss",
+            "url": final_url,
+            "http_status": status_code,
+            "message": "RSS/Atom 피드로 검증되었습니다."
+        }
+    if is_html:
+        return {
+            "status": "verified",
+            "kind": "docs",
+            "url": final_url,
+            "http_status": status_code,
+            "message": "접속 가능한 문서/블로그 페이지로 검증되었습니다. RSS가 아니므로 업데이트 감지는 제한적일 수 있습니다."
+        }
+
+    return {
+        "status": "warning",
+        "kind": "unknown",
+        "url": final_url,
+        "http_status": status_code,
+        "message": "접속은 가능하지만 RSS/문서 페이지인지 명확하지 않습니다."
+    }
 
 # --- Helper Functions ---
 def is_localhost(request: Request) -> bool:
@@ -387,6 +470,122 @@ JSON schema:
         "suggestions": suggestions[:12],
         "folder_suggestions": result.get("folder_suggestions", [])[:6],
         "cleanup_suggestions": result.get("cleanup_suggestions", [])[:6]
+    }
+
+@app.post("/api/feeds/suggest")
+async def suggest_feeds(payload: FeedSuggestionRequest):
+    """Suggests competitor products, docs pages, changelogs, and RSS feeds, then verifies each URL."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(payload.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for AI feed suggestions.")
+
+    current_keywords = payload.keywords or database.get_profile_keywords(payload.profile_id)
+    current_feeds = payload.feeds or database.get_profile_feeds(payload.profile_id)
+    seed_topic = payload.seed_topic.strip()
+
+    keyword_lines = "\n".join([
+        f"- {item.keyword} (folder: {item.folder or '미분류'})" if isinstance(item, KeywordItem)
+        else f"- {item.get('keyword', '')} (folder: {item.get('folder', '미분류')})"
+        for item in current_keywords
+    ])
+    feed_lines = "\n".join([
+        f"- {item.name}: {item.feed_url}" if isinstance(item, FeedItem)
+        else f"- {item.get('name', '')}: {item.get('feed_url', '')}"
+        for item in current_feeds
+    ])
+    existing_urls = {
+        (item.feed_url if isinstance(item, FeedItem) else item.get("feed_url", "")).strip().lower()
+        for item in current_feeds
+    }
+
+    prompt = f"""
+You are helping a Korean solution strategy team configure competitor/product monitoring sources.
+
+Seed topic from the user:
+{seed_topic or "(none)"}
+
+Current monitoring keywords:
+{keyword_lines or "(none)"}
+
+Current RSS/docs sources:
+{feed_lines or "(none)"}
+
+Suggest official or high-signal monitoring sources for competitor/product tracking.
+
+Rules:
+- Respond ONLY as valid JSON.
+- Do not include markdown fences.
+- Prefer official changelog, release notes, RSS/Atom feeds, developer blogs, docs pages, security advisory pages, and status/product update pages.
+- Do not invent obscure URLs. Use URLs you are confident exist.
+- Do not include URLs already present in the current source list.
+- Include both direct RSS/Atom URLs and useful docs/blog pages when appropriate.
+- For category, use one of: "release", "changelog", "docs", "blog", "security", "status", "community", "other".
+- reason must be Korean and concise.
+
+JSON schema:
+{{
+  "suggestions": [
+    {{
+      "name": "source display name",
+      "url": "https://example.com/feed.xml",
+      "category": "release|changelog|docs|blog|security|status|community|other",
+      "reason": "short Korean reason",
+      "priority": "high|medium|low"
+    }}
+  ]
+}}
+"""
+
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You recommend reliable competitor monitoring sources. Always output valid JSON only."
+    )
+
+    try:
+        async with Agent(config=sdk_config) as ai_agent:
+            response = await ai_agent.chat(prompt)
+            text = await response.text()
+        result = extract_json_object(text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate feed suggestions: {e}")
+
+    suggestions = []
+    seen_urls = set(existing_urls)
+    for item in result.get("suggestions", []):
+        name = str(item.get("name", "")).strip()
+        url = normalize_candidate_url(str(item.get("url", "")).strip())
+        if not name or not url:
+            continue
+        url_key = url.lower().rstrip("/")
+        if url_key in seen_urls:
+            continue
+        seen_urls.add(url_key)
+
+        validation = await asyncio.to_thread(validate_monitoring_url, url)
+        suggestions.append({
+            "name": name,
+            "url": validation.get("url") or url,
+            "category": str(item.get("category", "other")).strip() or "other",
+            "reason": str(item.get("reason", "")).strip(),
+            "priority": str(item.get("priority", "medium")).strip() or "medium",
+            "validation": validation
+        })
+
+        if len(suggestions) >= 10:
+            break
+
+    verified_count = sum(1 for item in suggestions if item.get("validation", {}).get("status") == "verified")
+    return {
+        "suggestions": suggestions,
+        "verified_count": verified_count,
+        "total_count": len(suggestions)
     }
 
 @app.post("/api/stop")

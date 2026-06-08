@@ -46,6 +46,8 @@ function createFeedCard(item, tabType) {
     const starTitle = tabType === "starred" ? "중요 보관함 해제" : "중요 보관함 저장";
     const publishedDate = getPublishedDate(item);
     const collectedDate = formatDateOnly(item.created_at);
+    const isAnalysisPending = item.analysis_status === "pending";
+    const analysisBadge = isAnalysisPending ? `<span class="badge badge-pending">AI 요약 대기</span>` : "";
     const publishedRow = publishedDate
         ? `<span><strong>발행일</strong>${escapeHtml(formatDateOnly(publishedDate))}</span>`
         : `<span><strong>발행일</strong>확인 불가</span>`;
@@ -62,6 +64,7 @@ function createFeedCard(item, tabType) {
             <div class="card-header">
                 <div class="card-meta">
                     <span class="badge badge-doc">경쟁사 업데이트</span>
+                    ${analysisBadge}
                 </div>
                 <div class="card-actions">
                     <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="doc" title="${starTitle}">★</button>
@@ -84,6 +87,7 @@ function createFeedCard(item, tabType) {
             <div class="card-header">
                 <div class="card-meta">
                     <span class="badge badge-trend">기술 트렌드 뉴스</span>
+                    ${analysisBadge}
                 </div>
                 <div class="card-actions">
                     <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="trend" title="${starTitle}">★</button>
@@ -178,6 +182,11 @@ const DOM = {
     feedNameInput: document.getElementById("feed-name-input"),
     feedUrlInput: document.getElementById("feed-url-input"),
     addFeedRowBtn: document.getElementById("add-feed-row-btn"),
+    suggestFeedsBtn: document.getElementById("suggest-feeds-btn"),
+    feedSuggestionsPanel: document.getElementById("feed-suggestions-panel"),
+    feedSuggestionsStatus: document.getElementById("feed-suggestions-status"),
+    feedSuggestionsList: document.getElementById("feed-suggestions-list"),
+    closeFeedSuggestionsBtn: document.getElementById("close-feed-suggestions-btn"),
     feedRowsContainer: document.getElementById("feed-rows-container"),
     saveSettingsBtn: document.getElementById("save-settings-btn"),
     deleteProfileBtn: document.getElementById("delete-profile-btn"),
@@ -380,6 +389,14 @@ function setupEventListeners() {
             DOM.keywordSuggestionsPanel.style.display = "none";
         });
     }
+    if (DOM.suggestFeedsBtn) {
+        DOM.suggestFeedsBtn.addEventListener("click", handleSuggestFeeds);
+    }
+    if (DOM.closeFeedSuggestionsBtn) {
+        DOM.closeFeedSuggestionsBtn.addEventListener("click", () => {
+            DOM.feedSuggestionsPanel.style.display = "none";
+        });
+    }
     
     // Feeds Actions
     DOM.addFeedRowBtn.addEventListener("click", () => {
@@ -555,6 +572,10 @@ function updateAdminControls() {
         DOM.feedUrlInput.removeAttribute("disabled");
         DOM.addFeedRowBtn.classList.remove("disabled");
         DOM.addFeedRowBtn.removeAttribute("disabled");
+        if (DOM.suggestFeedsBtn) {
+            DOM.suggestFeedsBtn.classList.remove("disabled");
+            DOM.suggestFeedsBtn.removeAttribute("disabled");
+        }
         DOM.saveSettingsBtn.classList.remove("disabled");
         DOM.saveSettingsBtn.removeAttribute("disabled");
         DOM.deleteProfileBtn.classList.remove("disabled");
@@ -586,6 +607,10 @@ function updateAdminControls() {
         }
         DOM.feedNameInput.removeAttribute("disabled");
         DOM.feedUrlInput.removeAttribute("disabled");
+        if (DOM.suggestFeedsBtn) {
+            DOM.suggestFeedsBtn.classList.remove("disabled");
+            DOM.suggestFeedsBtn.removeAttribute("disabled");
+        }
         
         DOM.addFeedRowBtn.classList.remove("disabled");
         DOM.addFeedRowBtn.removeAttribute("disabled");
@@ -1042,6 +1067,143 @@ function applyKeywordCleanupSuggestions(cleanupSuggestions) {
     });
     
     return { changed, removed };
+}
+
+function getCurrentFeedPayload() {
+    return Array.from(DOM.feedRowsContainer.querySelectorAll("tr")).map(row => {
+        const cols = row.querySelectorAll("td");
+        return {
+            name: cols[0] ? cols[0].textContent.trim() : "",
+            feed_url: cols[1] ? cols[1].textContent.trim() : ""
+        };
+    }).filter(item => item.name && item.feed_url);
+}
+
+async function handleSuggestFeeds() {
+    if (!currentProfileId || !DOM.feedSuggestionsPanel) return;
+    const seedTopic = [DOM.feedNameInput.value.trim(), DOM.feedUrlInput.value.trim()]
+        .filter(Boolean)
+        .join(" ");
+    const keywords = getCurrentKeywordPayload();
+    const feeds = getCurrentFeedPayload();
+    
+    DOM.feedSuggestionsPanel.style.display = "block";
+    DOM.feedSuggestionsStatus.textContent = "AI가 경쟁제품/공식 문서/RSS 후보를 찾고, URL 접속 검증을 진행 중입니다...";
+    DOM.feedSuggestionsList.innerHTML = "";
+    DOM.suggestFeedsBtn.setAttribute("disabled", "true");
+    DOM.suggestFeedsBtn.classList.add("disabled");
+    
+    try {
+        const res = await fetch("/api/feeds/suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                seed_topic: seedTopic,
+                keywords,
+                feeds
+            })
+        });
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "추천 피드를 가져오지 못했습니다.");
+        }
+        
+        const data = await res.json();
+        renderFeedSuggestions(data);
+    } catch (e) {
+        DOM.feedSuggestionsStatus.textContent = `추천 실패: ${e.message}`;
+    } finally {
+        DOM.suggestFeedsBtn.removeAttribute("disabled");
+        DOM.suggestFeedsBtn.classList.remove("disabled");
+    }
+}
+
+function renderFeedSuggestions(data) {
+    const suggestions = data.suggestions || [];
+    const verified = suggestions.filter(item => item.validation && item.validation.status === "verified");
+    
+    DOM.feedSuggestionsStatus.textContent = suggestions.length
+        ? `총 ${suggestions.length}개 후보 중 ${verified.length}개 URL이 검증되었습니다. 검증된 항목만 바로 추가할 수 있습니다.`
+        : "추천할 새 피드 후보가 많지 않습니다. 키워드나 제품명을 조금 더 구체화해보세요.";
+    
+    DOM.feedSuggestionsList.innerHTML = suggestions.length ? `
+        <div class="suggestions-bulk-actions feed-bulk-actions">
+            <button type="button" class="feed-bulk-add-btn" id="add-all-verified-feeds-btn" ${verified.length ? "" : "disabled"}>검증된 항목 일괄 추가</button>
+            <span>검증 완료 ${verified.length}개</span>
+        </div>
+        ${suggestions.map((item, idx) => renderFeedSuggestionCard(item, idx)).join("")}
+    ` : "";
+
+    const addAllBtn = document.getElementById("add-all-verified-feeds-btn");
+    if (addAllBtn) {
+        addAllBtn.addEventListener("click", () => {
+            let addedCount = 0;
+            suggestions.forEach(item => {
+                if (item.validation && item.validation.status === "verified" && addSuggestedFeed(item)) {
+                    addedCount += 1;
+                }
+            });
+            DOM.feedSuggestionsList.querySelectorAll(".add-suggested-feed").forEach(btn => {
+                btn.textContent = "처리됨";
+                btn.setAttribute("disabled", "true");
+            });
+            addAllBtn.textContent = addedCount ? `${addedCount}개 추가됨` : "이미 모두 추가됨";
+            addAllBtn.setAttribute("disabled", "true");
+            DOM.feedSuggestionsStatus.textContent = `${addedCount}개 피드를 추가했습니다. 프로필 설정 저장을 눌러 DB에 반영하세요.`;
+        });
+    }
+    
+    DOM.feedSuggestionsList.querySelectorAll(".add-suggested-feed").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const item = suggestions[Number(btn.dataset.index)];
+            if (!item) return;
+            if (addSuggestedFeed(item)) {
+                btn.textContent = "추가됨";
+                btn.setAttribute("disabled", "true");
+                DOM.feedSuggestionsStatus.textContent = "피드를 추가했습니다. 프로필 설정 저장을 눌러 DB에 반영하세요.";
+            } else {
+                btn.textContent = "이미 있음";
+                btn.setAttribute("disabled", "true");
+            }
+        });
+    });
+}
+
+function renderFeedSuggestionCard(item, idx) {
+    const validation = item.validation || {};
+    const status = validation.status || "warning";
+    const kind = validation.kind || "unknown";
+    const canAdd = status === "verified";
+    const statusLabel = status === "verified" ? "검증됨" : status === "warning" ? "주의" : "실패";
+    const kindLabel = kind === "rss" ? "RSS/Atom" : kind === "docs" ? "Docs/Page" : "Unknown";
+    
+    return `
+        <div class="feed-suggestion-card status-${escapeHtml(status)}">
+            <div class="feed-suggestion-main">
+                <div class="feed-suggestion-title">
+                    <strong>${escapeHtml(item.name || "")}</strong>
+                    <span class="suggestion-folder">${escapeHtml(item.category || "other")}</span>
+                    <span class="validation-pill ${escapeHtml(status)}">${statusLabel}</span>
+                    <span class="validation-pill muted">${kindLabel}</span>
+                </div>
+                <a href="${escapeHtml(item.url || "")}" target="_blank" class="suggested-url">${escapeHtml(item.url || "")}</a>
+                <p>${escapeHtml(item.reason || "경쟁사/제품 모니터링 후보로 추천됩니다.")}</p>
+                <small>${escapeHtml(validation.message || "")}</small>
+            </div>
+            <button type="button" class="btn tiny add-suggested-feed" data-index="${idx}" ${canAdd ? "" : "disabled"}>${canAdd ? "추가" : "검증 실패"}</button>
+        </div>
+    `;
+}
+
+function addSuggestedFeed(item) {
+    if (!item || !item.name || !item.url) return false;
+    const normalizedUrl = String(item.url).trim().replace(/\/$/, "").toLowerCase();
+    const existing = getCurrentFeedPayload().map(feed => String(feed.feed_url).trim().replace(/\/$/, "").toLowerCase());
+    if (existing.includes(normalizedUrl)) return false;
+    addFeedRow(item.name, item.url);
+    return true;
 }
 
 function removeKeywordTagAndEmptyGroup(tag) {

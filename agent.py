@@ -105,14 +105,18 @@ Keywords: <Comma-separated keywords, e.g., Security, CI/CD, AI, Cloud>
         return {
             "summary": summary,
             "impact": impact,
-            "keywords": keywords
+            "keywords": keywords,
+            "analysis_status": "complete",
+            "analysis_error": ""
         }
     except Exception as e:
         print(f"Error analyzing doc update: {e}")
         return {
-            "summary": update['description'][:300] if update['description'] else update['title'],
-            "impact": "Failed to analyze impact using AI.",
-            "keywords": ["Error"]
+            "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
+            "impact": "AI 분석 대기 중입니다. 다음 스캔에서 요약을 다시 시도합니다.",
+            "keywords": ["AI 요약 대기"],
+            "analysis_status": "pending",
+            "analysis_error": str(e)[:300]
         }
 
 async def analyze_news_trend(agent: Agent, keyword: str, article: dict) -> dict:
@@ -156,11 +160,19 @@ Source: <The publisher or news channel if available, or 'Web'>
         return {
             "title": clean_title,
             "summary": summary,
-            "source": source
+            "source": source,
+            "analysis_status": "complete",
+            "analysis_error": ""
         }
     except Exception as e:
         print(f"Error analyzing news trend: {e}")
-        return None
+        return {
+            "title": article.get("title", "제목 확인 필요"),
+            "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
+            "source": "AI 요약 대기",
+            "analysis_status": "pending",
+            "analysis_error": str(e)[:300]
+        }
 
 async def generate_strategic_report(agent: Agent, doc_notes: list, trend_notes: list, template_prompt: str) -> str:
     """Generates a strategic report summarizing docs and trends using a custom prompt template."""
@@ -201,6 +213,54 @@ async def generate_strategic_report(agent: Agent, doc_notes: list, trend_notes: 
         print(f"Error generating strategic report: {e}")
         return f"# Tech Watch 전략 보고서 ({current_date})\n\nFailed to generate report using AI: {e}"
 
+async def retry_pending_ai_analysis(agent: Agent, profile_id: int):
+    """Retries AI summaries that were saved while Gemini was unavailable or rate-limited."""
+    pending_docs = database.get_pending_ai_docs(profile_id, limit=10)
+    pending_trends = database.get_pending_ai_trends(profile_id, limit=10)
+    
+    if not pending_docs and not pending_trends:
+        return
+    
+    print(f"\n--- 0. Retrying Pending AI Summaries ({len(pending_docs)} docs, {len(pending_trends)} trends) ---")
+    
+    for doc in pending_docs:
+        print(f"Retrying doc AI summary: {doc.get('title', '')}")
+        analysis = await analyze_doc_update(agent, doc.get("competitor", "Unknown"), {
+            "title": doc.get("title", ""),
+            "link": doc.get("link", ""),
+            "description": doc.get("summary", "")
+        })
+        if analysis.get("analysis_status") == "complete":
+            database.update_doc_analysis(
+                doc["id"],
+                analysis["summary"],
+                analysis["impact"],
+                analysis["keywords"],
+                "complete",
+                ""
+            )
+        else:
+            print(f"Doc still pending: {doc.get('title', '')}")
+    
+    for trend in pending_trends:
+        print(f"Retrying trend AI summary: {trend.get('title', '')}")
+        analysis = await analyze_news_trend(agent, trend.get("keyword", ""), {
+            "title": trend.get("title", ""),
+            "link": trend.get("link", ""),
+            "description": trend.get("summary", "")
+        })
+        if analysis and analysis.get("analysis_status") == "complete":
+            database.update_trend_analysis(
+                trend["id"],
+                analysis["title"],
+                analysis["summary"],
+                analysis["source"],
+                "complete",
+                ""
+            )
+        else:
+            print(f"Trend still pending: {trend.get('title', '')}")
+
 async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
     """Runs a single monitoring scan for a specific profile."""
     profile_id = profile["id"]
@@ -222,6 +282,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
         has_apple_notes = True
     except Exception as e:
         print(f"[Apple Notes Warning] Could not connect to Apple Notes: {e}. Storing data in SQLite database only.")
+
+    await retry_pending_ai_analysis(agent, profile_id)
 
     # Get feeds and keywords for this profile
     feeds = database.get_profile_feeds(profile_id)
@@ -266,7 +328,9 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                 summary=analysis['summary'],
                 impact=analysis['impact'],
                 keywords=analysis['keywords'],
-                published_at=published_at
+                published_at=published_at,
+                analysis_status=analysis.get("analysis_status", "complete"),
+                analysis_error=analysis.get("analysis_error", "")
             )
             
             if saved:
@@ -295,7 +359,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         print(f"[Apple Notes Error] Failed to write note: {e}")
                 
                 # Send Discord Notification
-                if webhook_url and is_recent:
+                if webhook_url and is_recent and analysis.get("analysis_status") == "complete":
                     discord_notifier.send_doc_update_alert(
                         webhook_url,
                         name,
@@ -305,6 +369,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         update['link'],
                         format_source_date_for_note(update.get('date', ''))
                     )
+                elif webhook_url and analysis.get("analysis_status") == "pending":
+                    print("Skipping Discord doc alert because AI summary is pending.")
                 elif webhook_url:
                     print(f"Skipping Discord doc alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {update.get('date', '')}")
         print(f"-> Logged {new_count} new updates for {name}.")
@@ -350,7 +416,9 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                 link=article['link'],
                 summary=analysis['summary'],
                 source=analysis['source'],
-                published_at=published_at
+                published_at=published_at,
+                analysis_status=analysis.get("analysis_status", "complete"),
+                analysis_error=analysis.get("analysis_error", "")
             )
             
             if saved:
@@ -375,7 +443,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         print(f"[Apple Notes Error] Failed to write note: {e}")
                 
                 # Send Discord Notification
-                if webhook_url and is_recent:
+                if webhook_url and is_recent and analysis.get("analysis_status") == "complete":
                     discord_notifier.send_trend_alert(
                         webhook_url,
                         keyword,
@@ -385,6 +453,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         article['link'],
                         format_source_date_for_note(article.get('date', ''))
                     )
+                elif webhook_url and analysis.get("analysis_status") == "pending":
+                    print("Skipping Discord trend alert because AI summary is pending.")
                 elif webhook_url:
                     print(f"Skipping Discord trend alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {article.get('date', '')}")
         print(f"-> Logged {new_count} new trend items for '{keyword}'.")

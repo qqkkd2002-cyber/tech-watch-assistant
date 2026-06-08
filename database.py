@@ -141,6 +141,10 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN is_starred INTEGER DEFAULT 0")
     if 'published_at' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN published_at TEXT DEFAULT ''")
+    if 'analysis_status' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN analysis_status TEXT DEFAULT 'complete'")
+    if 'analysis_error' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN analysis_error TEXT DEFAULT ''")
         
     # Alter scanned_trends table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_trends)")
@@ -149,6 +153,10 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN is_starred INTEGER DEFAULT 0")
     if 'published_at' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN published_at TEXT DEFAULT ''")
+    if 'analysis_status' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_status TEXT DEFAULT 'complete'")
+    if 'analysis_error' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_error TEXT DEFAULT ''")
         
     # Alter profile_keywords table to add folder column if missing
     cursor.execute("PRAGMA table_info(profile_keywords)")
@@ -460,15 +468,15 @@ def get_scanned_doc_titles(profile_id: int) -> List[str]:
     conn.close()
     return [r['title'] for r in rows]
 
-def save_scanned_doc(profile_id: int, competitor: str, title: str, link: str, date: str, summary: str, impact: str, keywords: List[str], published_at: str = "") -> bool:
+def save_scanned_doc(profile_id: int, competitor: str, title: str, link: str, date: str, summary: str, impact: str, keywords: List[str], published_at: str = "", analysis_status: str = "complete", analysis_error: str = "") -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
     kw_str = ", ".join(keywords)
     try:
         cursor.execute(
-            """INSERT INTO scanned_docs (profile_id, competitor, title, link, date, summary, impact, keywords, published_at) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, competitor, title, link, date, summary, impact, kw_str, published_at)
+            """INSERT INTO scanned_docs (profile_id, competitor, title, link, date, summary, impact, keywords, published_at, analysis_status, analysis_error) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (profile_id, competitor, title, link, date, summary, impact, kw_str, published_at, analysis_status, analysis_error)
         )
         conn.commit()
         return True
@@ -489,14 +497,14 @@ def get_scanned_trend_titles(profile_id: int) -> List[str]:
     conn.close()
     return [r['title'] for r in rows]
 
-def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, summary: str, source: str, published_at: str = "") -> bool:
+def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, summary: str, source: str, published_at: str = "", analysis_status: str = "complete", analysis_error: str = "") -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            """INSERT INTO scanned_trends (profile_id, keyword, title, link, summary, source, published_at) 
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, keyword, title, link, summary, source, published_at)
+            """INSERT INTO scanned_trends (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error)
         )
         conn.commit()
         return True
@@ -506,6 +514,62 @@ def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, sum
     except Exception as e:
         print(f"[Database] Error saving trend: {e}")
         return False
+    finally:
+        conn.close()
+
+def get_pending_ai_docs(profile_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT * FROM scanned_docs
+           WHERE profile_id = ? AND analysis_status = 'pending'
+           ORDER BY created_at ASC LIMIT ?""",
+        (profile_id, limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def update_doc_analysis(doc_id: int, summary: str, impact: str, keywords: List[str], analysis_status: str = "complete", analysis_error: str = "") -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE scanned_docs
+               SET summary = ?, impact = ?, keywords = ?, analysis_status = ?, analysis_error = ?
+               WHERE id = ?""",
+            (summary, impact, ", ".join(keywords), analysis_status, analysis_error, doc_id)
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+def get_pending_ai_trends(profile_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT * FROM scanned_trends
+           WHERE profile_id = ? AND analysis_status = 'pending'
+           ORDER BY created_at ASC LIMIT ?""",
+        (profile_id, limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def update_trend_analysis(trend_id: int, title: str, summary: str, source: str, analysis_status: str = "complete", analysis_error: str = "") -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE scanned_trends
+               SET title = ?, summary = ?, source = ?, analysis_status = ?, analysis_error = ?
+               WHERE id = ?""",
+            (title, summary, source, analysis_status, analysis_error, trend_id)
+        )
+        conn.commit()
+        return True
     finally:
         conn.close()
 

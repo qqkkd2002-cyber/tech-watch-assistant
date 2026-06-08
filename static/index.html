@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260608-keyword-suggest">
+    <link rel="stylesheet" href="style.css?v=20260608-ai-pending">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -315,12 +315,14 @@
                             </div>
                             <div class="form-group">
                                 <label>보고서 생성 방식</label>
-                                <label class="setting-toggle">
-                                    <input type="checkbox" id="auto-report-toggle" disabled>
-                                    <span class="toggle-ui"></span>
-                                    <span>
+                                <label class="setting-toggle report-mode-toggle">
+                                    <span class="toggle-copy">
                                         <strong>주간/월간 보고서 자동 생성</strong>
-                                        <small>꺼두면 수집만 자동으로 진행되고, 보고서는 버튼을 눌렀을 때만 생성됩니다.</small>
+                                        <small>켜두면 수집 후 보고서를 자동 아카이빙하고 Discord 알림을 전송합니다. 끄면 데이터만 수집되고 보고서는 버튼으로 수동 생성됩니다.</small>
+                                    </span>
+                                    <span class="toggle-switch-wrap">
+                                        <input type="checkbox" id="auto-report-toggle" disabled>
+                                        <span class="toggle-ui" aria-hidden="true"></span>
                                     </span>
                                 </label>
                             </div>
@@ -385,6 +387,18 @@
                                 <input type="text" id="feed-name-input" placeholder="경쟁사/제품 이름 (예: GitLab)" disabled>
                                 <input type="text" id="feed-url-input" placeholder="RSS/Atom Feed URL" disabled>
                                 <button id="add-feed-row-btn" class="btn primary disabled" disabled>추가</button>
+                            </div>
+                            <div class="feed-ai-tools">
+                                <button type="button" id="suggest-feeds-btn" class="btn secondary disabled" disabled>AI 경쟁제품/RSS 추천</button>
+                                <span class="help-text">현재 키워드와 피드 목록을 바탕으로 경쟁제품, 공식 문서, 릴리즈/RSS 후보를 추천하고 URL 접속 여부를 검증합니다.</span>
+                            </div>
+                            <div class="feed-suggestions-panel" id="feed-suggestions-panel" style="display: none;">
+                                <div class="suggestions-header">
+                                    <strong>AI 추천 피드 검증 결과</strong>
+                                    <button type="button" id="close-feed-suggestions-btn" class="ghost-btn">닫기</button>
+                                </div>
+                                <div id="feed-suggestions-status" class="suggestions-status"></div>
+                                <div id="feed-suggestions-list" class="feed-suggestions-list"></div>
                             </div>
                             <div class="feed-table-container">
                                 <table class="feed-table">
@@ -776,6 +790,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260608-keyword-suggest"></script>
+    <script src="app.js?v=20260608-ai-pending"></script>
 </body>
 </html>

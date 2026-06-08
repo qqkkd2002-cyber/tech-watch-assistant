@@ -416,6 +416,12 @@ body {
     color: #c084fc;
 }
 
+.badge-pending {
+    background-color: rgba(245, 158, 11, 0.16);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.22);
+}
+
 .card-date-block {
     display: flex;
     flex-wrap: wrap;
@@ -1025,22 +1031,48 @@ body {
     display: block;
 }
 
-.setting-toggle {
+.form-group label.setting-toggle {
     display: flex;
-    gap: 14px;
     align-items: center;
-    padding: 14px 16px;
+    justify-content: space-between;
+    gap: 18px;
+    width: 100%;
+    padding: 16px 18px;
     background-color: rgba(255, 255, 255, 0.025);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     cursor: pointer;
     min-height: 82px;
+    margin-bottom: 0;
+    transition: border-color var(--transition-speed), background-color var(--transition-speed);
 }
 
-.setting-toggle input {
+.form-group label.setting-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.035);
+    border-color: rgba(0, 242, 254, 0.22);
+}
+
+.form-group label.setting-toggle input {
     position: absolute;
     opacity: 0;
+    width: 1px;
+    height: 1px;
     pointer-events: none;
+}
+
+.toggle-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.toggle-switch-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    position: relative;
 }
 
 .toggle-ui {
@@ -1050,7 +1082,7 @@ body {
     background-color: rgba(255, 255, 255, 0.08);
     border: 1px solid var(--border-color);
     position: relative;
-    flex: 0 0 44px;
+    flex: none;
     transition: all var(--transition-speed);
 }
 
@@ -1076,11 +1108,15 @@ body {
     background-color: var(--color-success);
 }
 
+.setting-toggle input:disabled + .toggle-ui {
+    opacity: 0.62;
+}
+
 .setting-toggle strong {
     display: block;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-main);
-    margin-bottom: 2px;
+    line-height: 1.35;
 }
 
 .setting-toggle small {
@@ -1088,6 +1124,13 @@ body {
     font-size: 11px;
     color: var(--text-help);
     line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+    .form-group label.setting-toggle {
+        align-items: flex-start;
+        flex-direction: column;
+    }
 }
 
 /* --- Keywords settings --- */
@@ -1151,7 +1194,16 @@ body {
     flex-wrap: wrap;
 }
 
-.keyword-suggestions-panel {
+.feed-ai-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.keyword-suggestions-panel,
+.feed-suggestions-panel {
     margin-bottom: 14px;
     padding: 14px;
     border: 1px solid rgba(0, 242, 254, 0.18);
@@ -1187,7 +1239,8 @@ body {
     line-height: 1.5;
 }
 
-.keyword-suggestions-list {
+.keyword-suggestions-list,
+.feed-suggestions-list {
     display: grid;
     gap: 8px;
 }
@@ -1200,6 +1253,44 @@ body {
     padding: 8px 0 8px;
     color: var(--text-muted);
     font-size: 12px;
+}
+
+.feed-bulk-actions {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: -2px 0 8px;
+    padding: 10px 0 12px;
+    background: linear-gradient(180deg, rgba(8, 24, 38, 0.96), rgba(8, 24, 38, 0.78));
+}
+
+.feed-bulk-actions span {
+    color: var(--text-main);
+    font-weight: 700;
+}
+
+.feed-bulk-add-btn {
+    border: 1px solid rgba(14, 165, 233, 0.65);
+    background: linear-gradient(135deg, #0284c7, #0ea5e9);
+    color: #fff;
+    border-radius: 7px;
+    padding: 9px 14px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 10px 22px rgba(14, 165, 233, 0.22);
+}
+
+.feed-bulk-add-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 26px rgba(14, 165, 233, 0.3);
+}
+
+.feed-bulk-add-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
 }
 
 .cleanup-apply-btn {
@@ -1247,6 +1338,108 @@ body {
     font-size: 12px;
     line-height: 1.45;
     margin: 6px 0 0;
+}
+
+.feed-suggestion-card {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.feed-suggestion-card.status-verified {
+    border-color: rgba(16, 185, 129, 0.28);
+    background-color: rgba(16, 185, 129, 0.055);
+}
+
+.feed-suggestion-card.status-warning {
+    border-color: rgba(245, 158, 11, 0.28);
+    background-color: rgba(245, 158, 11, 0.055);
+}
+
+.feed-suggestion-card.status-invalid {
+    border-color: rgba(244, 63, 94, 0.25);
+    background-color: rgba(244, 63, 94, 0.045);
+}
+
+.feed-suggestion-main {
+    min-width: 0;
+}
+
+.feed-suggestion-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 5px;
+}
+
+.feed-suggestion-title strong {
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.suggested-url {
+    display: inline-block;
+    max-width: 100%;
+    color: var(--color-accent);
+    font-size: 12px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.suggested-url:hover {
+    text-decoration: underline;
+}
+
+.feed-suggestion-card p {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 6px 0 0;
+}
+
+.feed-suggestion-card small {
+    display: block;
+    color: var(--text-help);
+    font-size: 11px;
+    line-height: 1.45;
+    margin-top: 5px;
+}
+
+.validation-pill {
+    border-radius: 999px;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--text-muted);
+}
+
+.validation-pill.verified {
+    color: #34d399;
+    border-color: rgba(52, 211, 153, 0.28);
+    background-color: rgba(52, 211, 153, 0.08);
+}
+
+.validation-pill.warning {
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.28);
+    background-color: rgba(251, 191, 36, 0.08);
+}
+
+.validation-pill.invalid {
+    color: #fb7185;
+    border-color: rgba(251, 113, 133, 0.28);
+    background-color: rgba(251, 113, 133, 0.08);
+}
+
+.validation-pill.muted {
+    color: var(--text-help);
 }
 
 .suggestion-folder {
