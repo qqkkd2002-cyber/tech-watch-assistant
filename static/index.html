@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tech Watch Tracker Dashboard</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=20260602-date-parse">
+    <!-- html2pdf.js for Client-side PDF Exports -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="logo-icon">📊</span>
+                <div class="logo-text">
+                    <h1>Tech Watch Tracker</h1>
+                    <span class="version">v2.0 Team Web</span>
+                </div>
+            </div>
+
+            <!-- Profile Selector Section -->
+            <div class="profile-section">
+                <label for="profile-select">프로필 선택</label>
+                <div class="profile-selector-container">
+                    <select id="profile-select" class="profile-dropdown">
+                        <!-- Profiles loaded dynamically -->
+                    </select>
+                    <button id="add-profile-btn" class="icon-btn" title="새 프로필 추가">+</button>
+                </div>
+                
+                <!-- Global Scan Control -->
+                <div class="scan-control-container">
+                    <div class="scan-status-indicator">
+                        <span class="status-dot-pulse idle js-status-dot" id="sidebar-status-dot"></span>
+                        <span id="sidebar-status-text" class="status-badge idle js-status-text">대기 중 (Idle)</span>
+                    </div>
+                    <div class="scan-btn-group">
+                        <button id="start-scan-btn" class="btn success">▶️ 스캔 시작</button>
+                        <button id="stop-process-btn" class="btn danger disabled" disabled>🛑 스캔 중단</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Navigation Links -->
+            <nav class="nav-menu">
+                <a href="#guide" class="nav-item active" data-tab="guide">
+                    <span class="nav-icon">❓</span>
+                    <span class="nav-label">사용 설명서</span>
+                </a>
+                <a href="#feed" class="nav-item" data-tab="feed">
+                    <span class="nav-icon">📰</span>
+                    <span class="nav-label">모니터링 피드</span>
+                </a>
+                <a href="#starred" class="nav-item sub-item" data-tab="starred">
+                    <span class="nav-icon">⭐</span>
+                    <span class="nav-label">중요 보관함</span>
+                </a>
+                <a href="#reports" class="nav-item" data-tab="reports">
+                    <span class="nav-icon">📈</span>
+                    <span class="nav-label">월간 전략 보고서</span>
+                </a>
+                <a href="#settings" class="nav-item" data-tab="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-label">프로필 설정</span>
+                </a>
+                <a href="#board" class="nav-item" data-tab="board">
+                    <span class="nav-icon">💬</span>
+                    <span class="nav-label">소통 게시판</span>
+                </a>
+                <a href="#logs" class="nav-item" data-tab="logs">
+                    <span class="nav-icon">📟</span>
+                    <span class="nav-label">시스템 로그</span>
+                    <span class="status-dot-pulse idle js-status-dot" id="nav-status-dot"></span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <span class="status-text" id="connection-status">서버 연결 중...</span>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Feed Tab -->
+            <section id="feed-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>모니터링 피드</h2>
+                        <p class="subtitle">수집된 경쟁사 릴리즈 및 트렌드 뉴스 실시간 요약 피드입니다.</p>
+                    </div>
+                    <div class="header-actions">
+                        <div class="search-box">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="feed-search" placeholder="검색어 입력...">
+                        </div>
+                        <div class="feed-filters">
+                            <button class="filter-btn active" data-filter="all">전체</button>
+                            <button class="filter-btn" data-filter="docs">경쟁사 문서</button>
+                            <button class="filter-btn" data-filter="trends">키워드 뉴스</button>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="folder-filters-row" id="feed-folder-filters" style="display: none; justify-content: space-between; align-items: center;">
+                    <div class="folder-chips-list" id="feed-folder-chips" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+                    <div class="folder-group-toggle" id="feed-group-toggle-container" style="display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" id="feed-group-by-folder" class="custom-checkbox">
+                        <label for="feed-group-by-folder" style="font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;">📁 폴더별 모아보기</label>
+                    </div>
+                </div>
+
+                <div class="feed-container">
+                    <div class="empty-state" id="feed-empty" style="display: none;">
+                        <span class="empty-icon">📂</span>
+                        <h3>표시할 데이터가 없습니다</h3>
+                        <p>아직 수집된 정보가 없거나 검색 결과가 없습니다. 좌측 상단 [▶️ 스캔 시작]을 클릭해 보세요.</p>
+                    </div>
+                    <div class="feed-grid" id="feed-items-grid">
+                        <!-- Feed Cards loaded dynamically -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Starred Tab -->
+            <section id="starred-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>중요 보관함</h2>
+                        <p class="subtitle">별표로 모아둔 핵심 경쟁사 업데이트 및 트렌드 뉴스 목록입니다.</p>
+                    </div>
+                    <div class="header-actions">
+                        <div class="search-box">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="starred-search" placeholder="보관함 내 검색...">
+                        </div>
+                        <div class="feed-filters" id="starred-feed-filters">
+                            <button class="starred-filter-btn filter-btn active" data-filter="all">전체</button>
+                            <button class="starred-filter-btn filter-btn" data-filter="docs">경쟁사 문서</button>
+                            <button class="starred-filter-btn filter-btn" data-filter="trends">키워드 뉴스</button>
+                        </div>
+                        <button id="compile-starred-report-btn" class="glass-btn" style="background: linear-gradient(135deg, var(--color-purple), var(--color-accent)); color: white; border: none; font-weight: 500;">⭐ 중요 보관함 기반 보고서 생성</button>
+                    </div>
+                </header>
+
+                <div class="folder-filters-row" id="starred-folder-filters" style="display: none; justify-content: space-between; align-items: center;">
+                    <div class="folder-chips-list" id="starred-folder-chips" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+                    <div class="folder-group-toggle" id="starred-group-toggle-container" style="display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" id="starred-group-by-folder" class="custom-checkbox">
+                        <label for="starred-group-by-folder" style="font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;">📁 폴더별 모아보기</label>
+                    </div>
+                </div>
+
+                <div class="feed-container">
+                    <div class="empty-state" id="starred-empty" style="display: none;">
+                        <span class="empty-icon">📂</span>
+                        <h3>중요 보관함이 비어 있습니다</h3>
+                        <p>모니터링 피드에서 핵심 정보의 별표(★)를 눌러 여기에 추가해 보세요.</p>
+                    </div>
+                    <div class="feed-grid" id="starred-items-grid">
+                        <!-- Starred cards loaded dynamically -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Reports Tab -->
+            <section id="reports-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>월간 전략 보고서</h2>
+                        <p class="subtitle">수집 데이터를 바탕으로 주간/월간 기술 신호 및 경쟁사 동향 보고서를 아카이빙합니다.</p>
+                    </div>
+                    <div class="header-actions reports-header-actions">
+                        <div class="feed-filters" id="report-type-filters">
+                            <button class="report-filter-btn filter-btn active" data-report-filter="all">전체</button>
+                            <button class="report-filter-btn filter-btn" data-report-filter="weekly">주간</button>
+                            <button class="report-filter-btn filter-btn" data-report-filter="monthly">월간</button>
+                            <button class="report-filter-btn filter-btn" data-report-filter="starred">중요</button>
+                        </div>
+                        <button id="generate-weekly-report-btn" class="glass-btn">주간 보고서 생성</button>
+                        <button id="generate-monthly-report-btn" class="glass-btn" style="background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); color: white; border: none; font-weight: 600;">월간 보고서 생성</button>
+                    </div>
+                </header>
+
+                <div class="report-automation-status" id="report-automation-status">
+                    <div class="automation-status-main">
+                        <span class="automation-status-dot" id="report-auto-dot"></span>
+                        <div>
+                            <strong id="report-auto-title">자동 보고서 상태 확인 중</strong>
+                            <p id="report-auto-desc">프로필 설정의 자동 보고서 생성 여부를 확인하고 있습니다.</p>
+                        </div>
+                    </div>
+                    <button class="glass-btn" id="go-report-settings-btn">설정 변경</button>
+                </div>
+
+                <div class="report-scope-panel">
+                    <div class="scope-field">
+                        <label>보고서 분석 폴더</label>
+                        <div class="scope-folder-chips" id="report-scope-folder-chips">
+                            <button type="button" class="scope-folder-chip active" data-folder="">전체 폴더</button>
+                        </div>
+                    </div>
+                    <div class="scope-field">
+                        <label for="report-scope-keyword">보고서 분석 키워드</label>
+                        <div class="scope-keyword-input-row">
+                            <input type="text" id="report-scope-keyword" placeholder="키워드 입력 후 Enter">
+                            <select id="report-keyword-match-mode" class="profile-dropdown">
+                                <option value="any">하나라도 포함</option>
+                                <option value="all">모두 포함</option>
+                            </select>
+                        </div>
+                        <div class="scope-keyword-chips" id="report-scope-keyword-chips"></div>
+                    </div>
+                    <p class="scope-help">전체 폴더를 선택하면 모든 폴더를 봅니다. 폴더와 키워드는 여러 개 선택할 수 있으며, 키워드는 하나라도 포함 또는 모두 포함 조건으로 보고서를 만들 수 있습니다.</p>
+                </div>
+
+                <div class="reports-layout">
+                    <!-- Reports List -->
+                    <div class="reports-sidebar">
+                        <div class="reports-list-header">
+                            <h3>보고서 목록</h3>
+                        </div>
+                        <div class="reports-list" id="reports-list-items">
+                            <!-- Report list items loaded dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Report Viewer -->
+                    <div class="report-viewer" id="report-detail-viewer">
+                        <div class="report-viewer-empty" id="report-viewer-empty">
+                            <span class="viewer-icon">📝</span>
+                            <h3>보고서를 선택하세요</h3>
+                            <p>좌측 목록에서 보고서를 선택하면 상세 내용을 볼 수 있습니다.</p>
+                        </div>
+                        <div class="report-viewer-content" id="report-viewer-content" style="display: none;">
+                            <div class="report-viewer-header">
+                                <div class="report-meta">
+                                    <h3 id="report-title-display">보고서 제목</h3>
+                                    <div class="report-date-container">
+                                        <span class="report-date-icon">📅</span>
+                                        <span id="report-date-display">2026-06-01</span>
+                                    </div>
+                                </div>
+                                <div class="report-download-actions">
+                                    <button class="glass-btn" id="download-md-btn">📝 마크다운 다운로드</button>
+                                    <button class="glass-btn" id="download-pdf-btn" style="background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); color: white; border: none; font-weight: 500;">📄 PDF 내보내기</button>
+                                </div>
+                            </div>
+                            <div class="report-markdown-body" id="report-body-display">
+                                <!-- Markdown content parsed into HTML -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section id="settings-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>프로필 설정</h2>
+                        <p class="subtitle">선택한 프로필의 핵심 API 설정, 수집 키워드 및 RSS 피드를 구성합니다.</p>
+                    </div>
+                    <div class="admin-badge-container">
+                        <span id="admin-badge" class="badge badge-locked">🔒 일반 접근 모드</span>
+                        <button id="auth-btn" class="glass-btn small">자격 증명 잠금해제</button>
+                    </div>
+                </header>
+
+                <div class="settings-overview" id="settings-overview">
+                    <div class="overview-card">
+                        <span class="overview-label">현재 프로필</span>
+                        <strong id="overview-profile-name">-</strong>
+                    </div>
+                    <div class="overview-card">
+                        <span class="overview-label">추적 키워드</span>
+                        <strong id="overview-keyword-count">0개</strong>
+                    </div>
+                    <div class="overview-card">
+                        <span class="overview-label">RSS 피드</span>
+                        <strong id="overview-feed-count">0개</strong>
+                    </div>
+                    <div class="overview-card">
+                        <span class="overview-label">스캔 주기</span>
+                        <strong id="overview-scan-interval">24시간</strong>
+                    </div>
+                </div>
+
+                <div class="settings-grid">
+                    <!-- Column 1: API Configuration & Keywords -->
+                    <div class="settings-column">
+                        <div class="settings-card">
+                            <h3>API 및 알림 자격증명</h3>
+                            <div class="form-group">
+                                <label for="api-key-input">Gemini API Key</label>
+                                <div class="password-input-container">
+                                    <input type="password" id="api-key-input" placeholder="AQ.Ab8..." disabled>
+                                    <button class="toggle-password" id="toggle-api-key">👁️</button>
+                                </div>
+                                <span class="help-text">무료 티어는 13초당 1회 호출 속도 제한이 자동 적용됩니다.</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="webhook-input">Discord Webhook URL</label>
+                                <input type="text" id="webhook-input" placeholder="https://discordapp.com/api/webhooks/..." disabled>
+                                <span class="help-text">수집 완료 시 실시간 브리핑 카드가 전송될 디스코드 채널 링크입니다.</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="interval-input">자동 스캔 주기 (시간)</label>
+                                <input type="number" id="interval-input" value="24" min="1" max="720" disabled>
+                            </div>
+                            <div class="form-group">
+                                <label>보고서 생성 방식</label>
+                                <label class="setting-toggle">
+                                    <input type="checkbox" id="auto-report-toggle" disabled>
+                                    <span class="toggle-ui"></span>
+                                    <span>
+                                        <strong>주간/월간 보고서 자동 생성</strong>
+                                        <small>꺼두면 수집만 자동으로 진행되고, 보고서는 버튼을 눌렀을 때만 생성됩니다.</small>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>모니터링 키워드 & 폴더 분류</h3>
+                            <div class="keyword-input-area" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;">
+                                <div style="display: flex; gap: 8px; width: 100%;">
+                                    <select id="keyword-folder-select" class="profile-dropdown" style="flex: 1;" disabled>
+                                        <option value="미분류">폴더: 미분류</option>
+                                        <option value="__new__">+ 새 폴더 직접 입력...</option>
+                                    </select>
+                                    <input type="text" id="keyword-folder-input" placeholder="새 폴더명 입력..." style="flex: 1; display: none;" disabled>
+                                </div>
+                                <input type="text" id="keyword-add-input" placeholder="키워드 입력 후 Enter..." disabled>
+                            </div>
+                            <div class="keyword-tags" id="keyword-tags-container">
+                                <!-- Tags dynamically loaded -->
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>AI 보고서 양식(템플릿) 설정</h3>
+                            <div class="form-group">
+                                <label for="template-type-select">보고서 양식 선택</label>
+                                <select id="template-type-select" class="profile-dropdown" disabled>
+                                    <option value="basic">[기본] 기술 신호 및 경쟁사 동향 보고서</option>
+                                    <option value="monthly">[월간] 솔루션전략팀 월간 전략 보고서</option>
+                                    <option value="detailed">[상세] 경쟁사 기능 심층분석보고서</option>
+                                    <option value="custom">사용자 정의 템플릿 (개별 설정)</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="custom-template-group" style="display: none;">
+                                <label for="custom-template-input">사용자 정의 프롬프트 템플릿</label>
+                                <textarea id="custom-template-input" rows="8" class="board-textarea" placeholder="AI가 보고서를 작성할 때 사용할 마크다운 양식과 프롬프트 지침을 자유롭게 작성하세요.
+
+{docs_context} 와 {trends_context} 는 각각 수집된 경쟁사 문서와 트렌드 뉴스가 대입되는 자리표(Placeholder)입니다. 꼭 포함해 주세요." disabled></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Column 2: Feeds -->
+                    <div class="settings-column">
+                        <div class="settings-card full-height">
+                            <h3>수집 대상 경쟁사 제품 & RSS 피드</h3>
+                            <div class="feed-add-form">
+                                <input type="text" id="feed-name-input" placeholder="경쟁사/제품 이름 (예: GitLab)" disabled>
+                                <input type="text" id="feed-url-input" placeholder="RSS/Atom Feed URL" disabled>
+                                <button id="add-feed-row-btn" class="btn primary disabled" disabled>추가</button>
+                            </div>
+                            <div class="feed-table-container">
+                                <table class="feed-table">
+                                    <thead>
+                                        <tr>
+                                            <th>이름</th>
+                                            <th>피드 URL</th>
+                                            <th class="actions-col">동작</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="feed-rows-container">
+                                        <!-- Feed rows dynamically loaded -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Global Template Console -->
+                <div class="settings-grid" style="margin-top: 24px; display: none;" id="admin-templates-console">
+                    <div class="settings-column" style="grid-column: 1 / -1;">
+                        <div class="settings-card">
+                            <h3>표준 템플릿 프롬프트 설정 (관리자 전용)</h3>
+                            <div class="form-group">
+                                <label for="global-template-select">표준 템플릿 선택</label>
+                                <select id="global-template-select" class="profile-dropdown">
+                                    <option value="basic">기본 기술 신호 및 경쟁사 동향 보고서</option>
+                                    <option value="monthly">솔루션전략팀 월간 전략 보고서</option>
+                                    <option value="detailed">경쟁사 기술 심층 분석 보고서</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="global-template-content-input">표준 프롬프트 지침 내용</label>
+                                <textarea id="global-template-content-input" rows="12" class="board-textarea" placeholder="표준 프롬프트 내용을 기재하세요. {docs_context}와 {trends_context} 자리표(Placeholder)가 보고서 요약 내용으로 대체되므로 반드시 포함해야 합니다."></textarea>
+                            </div>
+                            <button id="save-global-template-btn" class="btn success">💾 표준 템플릿 프롬프트 저장</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="save-settings-btn" class="btn primary large disabled" disabled>💾 프로필 설정 변경 저장</button>
+                    <button id="delete-profile-btn" class="btn danger large disabled" disabled>🗑️ 현재 프로필 삭제</button>
+                </div>
+            </section>
+
+            <!-- Guide Tab -->
+            <section id="guide-tab" class="tab-pane active">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>솔루션전략팀 사용설명서 (Team User Guide)</h2>
+                        <p class="subtitle">경쟁사 동향과 기술 신호를 자동으로 축적하고, 전략 보고서 초안까지 연결하는 솔루션전략팀 업무 자동화 가이드입니다.</p>
+                    </div>
+                </header>
+
+                <div class="guide-container">
+                    <!-- System Purpose Introduction Panel -->
+                    <div class="guide-intro-panel">
+                        <div class="intro-header">
+                            <span class="intro-icon">🎯</span>
+                            <div>
+                                <h3>솔루션전략팀의 기술 시장 관측소</h3>
+                                <p class="intro-tagline">Tech Watch Tracker는 매번 사람이 검색하던 <strong>경쟁사 릴리즈, 기술 키워드 뉴스, 시장 변화 신호</strong>를 자동으로 모으고, 반복되는 흐름을 읽어 <strong>주간/월간 전략 보고서, 경쟁사 비교자료, 제품 포지션 분석 자료</strong>로 연결하는 업무 자동화 대시보드입니다.</p>
+                            </div>
+                        </div>
+
+                        <div class="guide-principle-box">
+                            <span class="principle-label">핵심 운영 원칙</span>
+                            <p><strong>개인별 관심사는 프로필로 분리하고, 수집 데이터와 분석 산출물은 팀 자산으로 중앙 축적합니다.</strong></p>
+                            <small>팀원은 각자 관심 키워드와 폴더를 운영하고, 누적된 데이터는 전략 보고서뿐 아니라 경쟁사 비교, 포지션 비교, 기술 채택 흐름 분석에 활용합니다.</small>
+                        </div>
+
+                        <div class="guide-value-grid">
+                            <div class="guide-value-card">
+                                <span class="value-label">자동화되는 업무</span>
+                                <ul>
+                                    <li>경쟁사 릴리즈/변경사항 수집</li>
+                                    <li>기술 키워드 뉴스 검색 및 요약</li>
+                                    <li>중요 업데이트 선별과 보관</li>
+                                    <li>주간/월간 전략 보고서 초안 작성</li>
+                                    <li>Discord 기반 팀 공유</li>
+                                </ul>
+                            </div>
+                            <div class="guide-value-card">
+                                <span class="value-label">효율화되는 지점</span>
+                                <ul>
+                                    <li>자료 검색과 1차 요약 시간 절감</li>
+                                    <li>경쟁사 업데이트 누락 감소</li>
+                                    <li>반복 등장 키워드와 시장 신호 누적</li>
+                                    <li>전략회의/RFP/제안서/경쟁사 비교자료 확보</li>
+                                    <li>팀원별 관심 영역을 프로필로 분리 관리</li>
+                                </ul>
+                            </div>
+                            <div class="guide-value-card">
+                                <span class="value-label">전략적으로 얻는 것</span>
+                                <ul>
+                                    <li>어떤 기술 키워드가 자주 등장하는지</li>
+                                    <li>경쟁사가 어느 방향으로 움직이는지</li>
+                                    <li>AI, DevSecOps, 거버넌스 등 반복 신호가 무엇인지</li>
+                                    <li>우리 제품과 경쟁사의 포지션 차이가 무엇인지</li>
+                                    <li>우리 솔루션 전략에 반영할 액션이 무엇인지</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Highlights Grid -->
+                        <div class="intro-highlights-grid">
+                            <div class="highlight-box bg-purple-glow">
+                                <div class="highlight-title">
+                                    <span class="highlight-emoji">🔄</span>
+                                    <h4>상시 시장 신호 축적</h4>
+                                </div>
+                                <p class="highlight-desc">업무가 생긴 뒤 급하게 검색하는 방식에서 벗어나, 평소에 경쟁사/기술 동향을 계속 쌓아두고 필요할 때 바로 분석할 수 있습니다.</p>
+                            </div>
+
+                            <div class="highlight-box bg-cyan-glow">
+                                <div class="highlight-title">
+                                    <span class="highlight-emoji">📈</span>
+                                    <h4>보고서 초안 자동화</h4>
+                                </div>
+                                <p class="highlight-desc">누적 데이터를 기반으로 기술 키워드, 경쟁사 움직임, 반복 신호, 전략 시사점을 구조화해 보고서 초안 작성 시간을 줄입니다.</p>
+                            </div>
+                        </div>
+
+                        <!-- Background Collection Box -->
+                        <div class="guide-note-box bg-amber-glow">
+                            <div class="note-header">
+                                <span class="note-icon">⚙️</span>
+                                <strong>자동 백그라운드 수집 작동 방식</strong>
+                            </div>
+                            <p class="note-desc">컴퓨터가 켜져 있고 대시보드 서버가 가동 중인 동안에는, <strong>설정된 스캔 주기(기본 24시간)마다 백그라운드 에이전트가 자동으로 실행되어 최신 데이터를 조용히 수집</strong>해 둡니다. 프로필 설정에서 <strong>주간/월간 보고서 자동 생성</strong>을 켜면 수집 후 보고서도 자동으로 아카이빙되고 Discord 알림이 전송됩니다. 꺼두면 데이터만 쌓이고 보고서는 버튼을 눌렀을 때만 생성됩니다.</p>
+                        </div>
+                    </div>
+
+                    <!-- Phase 1 Collapsible Section -->
+                    <details class="guide-phase-details">
+                        <summary class="guide-phase-summary">🚀 Phase 1: 초기 설정 및 자동 수집 개시</summary>
+                        <div class="guide-phase-content">
+                            <div class="guide-grid-layout">
+                                <!-- Card 1 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 1</span>
+                                        <h3>👤 나만의 프로필 생성</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p>대시보드 좌측 상단 드롭다운 옆의 **[+]** 버튼을 눌러 본인의 이름이나 관심 영역(예: <code>기획자 홍길동</code>, <code>연구용 공통</code>)으로 새로운 프로필을 생성합니다. (별도의 회원가입이나 로그인은 필요 없습니다.)</p>
+                                    </div>
+                                </div>
+
+                                <!-- Card 2 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 2</span>
+                                        <h3>⚙️ 프로필 설정 및 API/피드 연동</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p><strong>[프로필 설정]</strong> 메뉴로 이동하여 본인 프로필의 핵심 정보들을 입력해 줍니다.</p>
+                                        <ul class="guide-list" style="margin-top: 8px; padding-left: 16px; font-size: 12px; color: var(--text-muted);">
+                                            <li><strong>API Key 연동</strong>: AI 분석에 사용할 본인의 <code>Gemini API Key</code>를 입력합니다.</li>
+                                            <li><strong>경쟁사 RSS 피드 추가</strong>: 수집을 추적할 경쟁사 사이트의 RSS 피드 주소(예: GitHub Changelog)를 추가합니다.</li>
+                                            <li><strong>추적 키워드 추가</strong>: 최신 뉴스 트렌드를 추적할 관심 키워드(예: <code>AI</code>, <code>DevOps</code>)를 추가합니다.</li>
+                                            <li><strong>디스코드 알림 연동</strong>: 수집이 끝났을 때 실시간 브리핑을 전송받을 디스코드 채널 웹훅 주소를 입력합니다.</li>
+                                            <li><strong>보고서 생성 방식 선택</strong>: <code>주간/월간 보고서 자동 생성</code>을 켜면 자동 아카이빙, 끄면 수동 생성 방식으로 운영됩니다.</li>
+                                        </ul>
+
+                                        <details class="guide-details">
+                                            <summary>Step 2-1. Gemini API Key 발급/입력 방법</summary>
+                                            <div class="details-content">
+                                                <ol>
+                                                    <li>Google AI Studio에서 Gemini API Key를 발급합니다.</li>
+                                                    <li><strong>[프로필 설정]</strong>의 <code>Gemini API Key</code> 입력칸에 붙여넣습니다.</li>
+                                                    <li>키는 외부에 공유하지 말고, GitHub/GitLab에는 올리지 않습니다.</li>
+                                                    <li>무료 티어를 사용할 경우 호출 제한이 있을 수 있어, 앱이 적당한 속도로 분석하도록 구성되어 있습니다.</li>
+                                                </ol>
+                                            </div>
+                                        </details>
+
+                                        <details class="guide-details">
+                                            <summary>Step 2-2. Discord Webhook 연동 방법</summary>
+                                            <div class="details-content">
+                                                <ol>
+                                                    <li>Discord에서 알림을 받을 채널의 <strong>채널 편집</strong> 메뉴를 엽니다.</li>
+                                                    <li><strong>연동</strong> 또는 <strong>Integrations</strong> 메뉴에서 Webhook을 생성합니다.</li>
+                                                    <li>생성된 Webhook URL을 복사해 <code>Discord Webhook URL</code> 입력칸에 붙여넣습니다.</li>
+                                                    <li>Webhook URL을 아는 사람은 해당 채널에 메시지를 보낼 수 있으므로 외부 공유를 피하고, 노출되면 즉시 재발급합니다.</li>
+                                                </ol>
+                                            </div>
+                                        </details>
+                                    </div>
+                                </div>
+
+                                <!-- Card 3 -->
+                                <div class="guide-card-panel full-width">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 3</span>
+                                        <h3>▶️ 스캔 시작 (자동 백그라운드 수집 활성화)</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p>설정이 끝나면 좌측 프로필 선택 영역 하단에 있는 <strong>[▶️ 스캔 시작]</strong> 버튼을 클릭합니다.</p>
+                                        <p>첫 스캔이 가동되어 실시간 수집이 개시됩니다. **이후부터는 컴퓨터가 켜져 있는 동안 설정한 주기(예: 24시간)마다 백그라운드 에이전트가 최신 정보들을 수집하여 누적**해 줍니다. 자동 보고서 옵션이 켜져 있으면 같은 주/같은 월의 보고서 중복 생성을 피하면서 주간·월간 보고서를 아카이빙합니다.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <!-- Phase 2 Collapsible Section -->
+                    <details class="guide-phase-details">
+                        <summary class="guide-phase-summary">💡 Phase 2: 수집 데이터를 이용한 전략적 업무 활용 (뭘 할 수 있나요?)</summary>
+                        <div class="guide-phase-content">
+                            <div class="guide-grid-layout">
+                                <!-- Card 4 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 4</span>
+                                        <h3>📰 실시간 피드 모니터링</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p>자동 수집된 자료들은 <strong>[모니터링 피드]</strong> 메뉴에 실시간 요약 카드로 차곡차곡 쌓입니다. 검색어 검색 및 '경쟁사 문서' / '키워드 뉴스' 분류 필터를 통해 수집 현황을 상시 모니터링할 수 있습니다.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Card 5 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 5</span>
+                                        <h3>★ 중요 자료 별표 등록 및 관리</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p>피드를 훑어보다가 우리 팀 제품이나 기획 전략에 정말 중요한 단서가 되는 안건이 보인다면, 카드 우측 상단의 **별표(★) 버튼**을 클릭하여 **[중요 보관함]** 메뉴에 모아놓을 수 있습니다.</p>
+                                        <p class="guide-tip-text">💡 모니터링 피드에서 별표를 켜거나 꺼도 피드 목록에서는 사라지지 않고 유지됩니다. 단, **중요 보관함** 메뉴 내부에서 별표를 해제하면 보관함 리스트에서만 실시간으로 즉시 제외됩니다.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Card 6 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 6</span>
+                                        <h3>📊 AI 전략 보고서 생성 및 아카이빙</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p>축적된 자료들을 기반으로 주간/월간 전략 보고서를 자동 또는 수동 방식으로 생성할 수 있습니다.</p>
+                                        <ul class="guide-list" style="margin-top: 8px; padding-left: 16px; font-size: 12px; color: var(--text-muted);">
+                                            <li><strong>자동 생성</strong>: 프로필 설정에서 자동 보고서 생성을 켜면, 수집 후 주간/월간 기술 신호 보고서가 자동으로 생성되어 아카이빙됩니다.</li>
+                                            <li><strong>수동 생성</strong>: <strong>[월간 전략 보고서]</strong> 탭 상단의 <strong>[주간 보고서 생성]</strong> 또는 <strong>[월간 보고서 생성]</strong> 버튼을 눌러 필요할 때 직접 생성할 수 있습니다.</li>
+                                            <li><strong>보관함 맞춤형 보고서</strong>: `중요 보관함` 메뉴 상단의 **[⭐ 중요 보관함 기반 보고서 생성]** 버튼을 클릭하면, 내가 직접 선별해 별표를 쳐놓은 핵심 안건들만 날카롭게 분석한 전용 보고서를 작성해 줍니다.</li>
+                                            <li><strong>Discord 알림</strong>: 보고서가 생성되면 핵심 요약과 함께 Discord 채널로 알림이 전송됩니다.</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- Card 7 -->
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header">
+                                        <span class="guide-step-badge">Step 7</span>
+                                        <h3>📄 보고서 내려받기 및 팀 내 의견 공유</h3>
+                                    </div>
+                                    <div class="guide-panel-body">
+                                        <p><strong>[월간 전략 보고서]</strong> 메뉴로 이동하여 완성된 보고서를 확인하세요. 우측 상단 버튼을 통해 오리지널 마크다운(`.md`) 파일로 내려받거나, 깔끔한 **백색 A4 인쇄 친화용 PDF**로 변환하여 출력 및 소장할 수 있습니다.</p>
+                                        <p class="guide-tip-text">💬 공유 주소(<code>http://localhost:8000</code>)를 통해 우리 팀원들과 대시보드를 공유하고, <strong>[소통 게시판]</strong>을 활용해 수집된 경쟁사 현황에 대한 분석 건의 및 피드백 의견을 실시간으로 나누며 협업하세요.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </section>
+
+            <!-- Board Tab -->
+            <section id="board-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>소통 게시판 (Discussion Board)</h2>
+                        <p class="subtitle">팀원들과 분석 정보를 공유하고 수집하고픈 키워드 등의 의견을 교류하는 공간입니다.</p>
+                    </div>
+                </header>
+
+                <div class="board-layout">
+                    <!-- Write Post Form -->
+                    <div class="board-write-panel">
+                        <div class="settings-card">
+                            <h3>✍️ 새 게시글 작성</h3>
+                            <div class="form-group">
+                                <label for="board-title-input">제목</label>
+                                <input type="text" id="board-title-input" placeholder="제목을 입력하세요...">
+                            </div>
+                            <div class="form-group">
+                                <label for="board-content-input">내용</label>
+                                <textarea id="board-content-input" rows="6" class="board-textarea" placeholder="팀원들에게 공유할 의견이나 건의 사항을 적어주세요..."></textarea>
+                            </div>
+                            <button id="submit-post-btn" class="btn primary full-width">📝 글 등록하기</button>
+                        </div>
+                    </div>
+
+                    <!-- Posts List -->
+                    <div class="board-posts-panel">
+                        <div class="board-posts-header">
+                            <h3>소통 타임라인</h3>
+                        </div>
+                        <div class="board-posts-list" id="board-posts-container">
+                            <!-- Posts loaded dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- System Logs Tab -->
+            <section id="logs-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>시스템 로그 & 제어</h2>
+                        <p class="subtitle">백그라운드 수집 에이전트를 강제로 수동 실행하고 실시간 실행 로그를 확인합니다.</p>
+                    </div>
+                </header>
+
+                <div class="logs-layout">
+                    <!-- Logs Controls -->
+                    <div class="logs-controls-bar">
+                        <div class="status-indicator">
+                            <span class="status-label">현재 상태:</span>
+                            <span id="logs-status-text" class="status-badge idle js-status-text">대기 중 (Idle)</span>
+                        </div>
+                        <div class="action-buttons-group">
+                            <button id="start-report-btn" class="btn purple">📊 월간 전략 보고서 강제 컴파일</button>
+                        </div>
+                    </div>
+
+                    <!-- Terminal console -->
+                    <div class="terminal-console">
+                        <div class="terminal-header">
+                            <div class="terminal-buttons">
+                                <span class="term-btn red"></span>
+                                <span class="term-btn yellow"></span>
+                                <span class="term-btn green"></span>
+                            </div>
+                            <span class="terminal-title">tech-watch-agent.log</span>
+                            <button class="terminal-clear" id="clear-logs-btn">Clear</button>
+                        </div>
+                        <div class="terminal-body" id="terminal-output-body">
+                            <!-- Live console log output streamed here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modal: Add Profile -->
+    <div class="modal-overlay" id="add-profile-modal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>새 프로필 추가</h3>
+                <button class="close-modal-btn" id="close-profile-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="new-profile-name">프로필 이름</label>
+                    <input type="text" id="new-profile-name" placeholder="예: 플랫폼 연구팀, 철수용">
+                    <span class="help-text">회원가입 없이 즉시 본인만의 키워드를 수집할 공간이 생성됩니다.</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary" id="cancel-profile-modal-btn">취소</button>
+                <button class="btn primary" id="confirm-profile-modal-btn">프로필 생성</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Admin Passcode Authentication -->
+    <div class="modal-overlay" id="auth-modal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>🔒 관리자 자격 증명 잠금해제</h3>
+                <button class="close-modal-btn" id="close-auth-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="admin-passcode-input">관리자 비밀번호</label>
+                    <input type="password" id="admin-passcode-input" placeholder="비밀번호 입력...">
+                    <span class="help-text">외부 네트워크 접속 환경에서는 프로필의 핵심 설정을 변경하려면 암호가 필요합니다.</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary" id="cancel-auth-modal-btn">취소</button>
+                <button class="btn primary" id="confirm-auth-modal-btn">잠금해제</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js?v=20260602-date-parse"></script>
+</body>
+</html>

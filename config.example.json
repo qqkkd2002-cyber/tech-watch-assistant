@@ -1,0 +1,20 @@
+{
+  "gemini_api_key": "YOUR_GEMINI_API_KEY",
+  "discord_webhook_url": "YOUR_DISCORD_WEBHOOK_URL",
+  "admin_passcode": "change-this-passcode",
+  "docs_to_monitor": [
+    {
+      "name": "GitLab Releases",
+      "feed_url": "https://about.gitlab.com/releases/categories/releases.xml"
+    },
+    {
+      "name": "GitHub Changelog",
+      "feed_url": "https://github.blog/changelog/feed/"
+    }
+  ],
+  "keywords": [
+    "DevOps",
+    "Platform Engineering"
+  ],
+  "check_interval_hours": 24
+}

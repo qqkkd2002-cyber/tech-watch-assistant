@@ -1,0 +1,17 @@
+config.json
+tech_watch.db
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.err
+__pycache__/
+*.pyc
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+.state/
+*.app/
+test_*.png
