@@ -22,6 +22,12 @@ except ImportError:
 import database
 database.init_db()
 
+try:
+    from google.antigravity import Agent, LocalAgentConfig
+except Exception:
+    Agent = None
+    LocalAgentConfig = None
+
 app = FastAPI(title="Tech Watch Tracker Web Server")
 
 # Configure CORS
@@ -80,6 +86,23 @@ class BoardPostPayload(BaseModel):
     profile_id: int
     title: str
     content: str
+
+class KeywordSuggestionRequest(BaseModel):
+    profile_id: int
+    seed_keyword: str = ""
+    keywords: List[KeywordItem] = []
+
+def extract_json_object(text: str) -> Dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start:end + 1]
+    return json.loads(cleaned)
 
 # --- Helper Functions ---
 def is_localhost(request: Request) -> bool:
@@ -268,6 +291,103 @@ async def trigger_report(profile_id: int, starred_only: bool = False, report_typ
         
     background_tasks.add_task(run_agent_subprocess, args, profile_id)
     return {"message": "Report generation started in background."}
+
+@app.post("/api/keywords/suggest")
+async def suggest_keywords(payload: KeywordSuggestionRequest):
+    """Suggests related monitoring keywords, folders, and duplicate cleanup ideas using AI."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(payload.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for AI keyword suggestions.")
+
+    seed_keyword = payload.seed_keyword.strip()
+    current_keywords = payload.keywords or database.get_profile_keywords(payload.profile_id)
+    keyword_lines = "\n".join([
+        f"- {item.keyword} (folder: {item.folder or '미분류'})" if isinstance(item, KeywordItem)
+        else f"- {item.get('keyword', '')} (folder: {item.get('folder', '미분류')})"
+        for item in current_keywords
+    ])
+    existing_names = {
+        (item.keyword if isinstance(item, KeywordItem) else item.get("keyword", "")).strip().lower()
+        for item in current_keywords
+    }
+
+    prompt = f"""
+You are helping a Korean solution strategy team build a technology monitoring keyword taxonomy.
+
+Seed keyword from the user:
+{seed_keyword or "(none)"}
+
+Current monitored keywords and folders:
+{keyword_lines or "(none)"}
+
+Please suggest keywords that reduce blind spots in monitoring competitor releases, DevOps/DevSecOps/platform engineering, financial IT modernization, AI engineering, governance, and developer productivity.
+
+Rules:
+- Respond ONLY as valid JSON.
+- Do not include markdown fences.
+- Do not include keywords that are already present in the current list.
+- Prefer practical monitoring search terms, not vague categories.
+- Mix Korean and English terms when both are useful for Korean news/RSS monitoring.
+- Each suggestion must include keyword, folder, reason, priority.
+- priority must be "high", "medium", or "low".
+- Also identify duplicate or inconsistent existing keywords when useful.
+
+JSON schema:
+{{
+  "suggestions": [
+    {{"keyword": "string", "folder": "string", "reason": "short Korean reason", "priority": "high|medium|low"}}
+  ],
+  "folder_suggestions": [
+    {{"folder": "string", "reason": "short Korean reason"}}
+  ],
+  "cleanup_suggestions": [
+    {{"canonical": "string", "duplicates": ["string"], "reason": "short Korean reason"}}
+  ]
+}}
+"""
+
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You are a concise taxonomy assistant for technology strategy monitoring. Always output valid JSON only."
+    )
+
+    try:
+        async with Agent(config=sdk_config) as ai_agent:
+            response = await ai_agent.chat(prompt)
+            text = await response.text()
+        result = extract_json_object(text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate keyword suggestions: {e}")
+
+    suggestions = []
+    seen = set(existing_names)
+    for item in result.get("suggestions", []):
+        keyword = str(item.get("keyword", "")).strip()
+        if not keyword:
+            continue
+        key = keyword.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append({
+            "keyword": keyword,
+            "folder": str(item.get("folder", "미분류")).strip() or "미분류",
+            "reason": str(item.get("reason", "")).strip(),
+            "priority": str(item.get("priority", "medium")).strip() or "medium"
+        })
+
+    return {
+        "suggestions": suggestions[:12],
+        "folder_suggestions": result.get("folder_suggestions", [])[:6],
+        "cleanup_suggestions": result.get("cleanup_suggestions", [])[:6]
+    }
 
 @app.post("/api/stop")
 async def stop_scan():

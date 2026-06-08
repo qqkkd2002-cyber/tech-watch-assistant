@@ -1143,6 +1143,126 @@ body {
     opacity: 1;
 }
 
+.keyword-ai-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.keyword-suggestions-panel {
+    margin-bottom: 14px;
+    padding: 14px;
+    border: 1px solid rgba(0, 242, 254, 0.18);
+    border-radius: 8px;
+    background-color: rgba(0, 242, 254, 0.04);
+}
+
+.suggestions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.ghost-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.ghost-btn:hover {
+    color: var(--text-main);
+}
+
+.suggestions-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+}
+
+.keyword-suggestions-list {
+    display: grid;
+    gap: 8px;
+}
+
+.suggestions-bulk-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.keyword-suggestion-card {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.keyword-suggestion-card strong {
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.keyword-suggestion-card p {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 6px 0 0;
+}
+
+.suggestion-folder {
+    margin-left: 6px;
+    color: var(--color-accent);
+    font-size: 11px;
+    border: 1px solid rgba(0, 242, 254, 0.18);
+    border-radius: 999px;
+    padding: 2px 7px;
+}
+
+.btn.tiny {
+    padding: 6px 10px;
+    font-size: 11px;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.suggestion-section-title {
+    margin: 12px 0 6px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.suggestion-note {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 7px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.suggestion-note strong {
+    color: #fda4af;
+    min-width: 92px;
+}
+
 /* --- Feed Table Config --- */
 .feed-add-form {
     display: grid;

@@ -25,7 +25,7 @@ FOLDER_DOCS = "Tech Watch - Docs"
 FOLDER_TRENDS = "Tech Watch - Trends"
 FOLDER_REPORTS = "Tech Watch - Reports"
 NEWS_RECENCY_DAYS = 2
-ALERT_FRESHNESS_HOURS = 48
+ALERT_FRESHNESS_HOURS = 168
 
 def parse_source_datetime(date_text: str):
     """Parse common RSS/Atom date formats into a timezone-aware datetime."""

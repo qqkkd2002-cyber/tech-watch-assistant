@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260602-date-parse">
+    <link rel="stylesheet" href="style.css?v=20260608-keyword-suggest">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -337,6 +337,20 @@
                                     <input type="text" id="keyword-folder-input" placeholder="새 폴더명 입력..." style="flex: 1; display: none;" disabled>
                                 </div>
                                 <input type="text" id="keyword-add-input" placeholder="키워드 입력 후 Enter..." disabled>
+                            </div>
+                            <div class="keyword-ai-tools">
+                                <button type="button" id="suggest-keywords-btn" class="btn secondary disabled" disabled>AI 키워드 확장 추천</button>
+                                <span class="help-text">현재 등록된 키워드/폴더 전체와 입력창의 새 키워드를 함께 보고, 놓칠 수 있는 연관 키워드와 분류를 추천합니다.</span>
+                            </div>
+                            <div class="keyword-suggestions-panel" id="keyword-suggestions-panel" style="display: none;">
+                                <div class="suggestions-header">
+                                    <strong>AI 추천 결과</strong>
+                                    <button type="button" id="close-keyword-suggestions-btn" class="ghost-btn">닫기</button>
+                                </div>
+                                <div id="keyword-suggestions-status" class="suggestions-status"></div>
+                                <div id="keyword-suggestions-list" class="keyword-suggestions-list"></div>
+                                <div id="keyword-folder-suggestions" class="keyword-folder-suggestions"></div>
+                                <div id="keyword-cleanup-suggestions" class="keyword-cleanup-suggestions"></div>
                             </div>
                             <div class="keyword-tags" id="keyword-tags-container">
                                 <!-- Tags dynamically loaded -->
@@ -762,6 +776,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260602-date-parse"></script>
+    <script src="app.js?v=20260608-keyword-suggest"></script>
 </body>
 </html>

@@ -166,6 +166,13 @@ const DOM = {
     keywordFolderInput: document.getElementById("keyword-folder-input"),
     keywordAddInput: document.getElementById("keyword-add-input"),
     keywordTagsContainer: document.getElementById("keyword-tags-container"),
+    suggestKeywordsBtn: document.getElementById("suggest-keywords-btn"),
+    keywordSuggestionsPanel: document.getElementById("keyword-suggestions-panel"),
+    keywordSuggestionsStatus: document.getElementById("keyword-suggestions-status"),
+    keywordSuggestionsList: document.getElementById("keyword-suggestions-list"),
+    keywordFolderSuggestions: document.getElementById("keyword-folder-suggestions"),
+    keywordCleanupSuggestions: document.getElementById("keyword-cleanup-suggestions"),
+    closeKeywordSuggestionsBtn: document.getElementById("close-keyword-suggestions-btn"),
     feedFolderFilters: document.getElementById("feed-folder-filters"),
     starredFolderFilters: document.getElementById("starred-folder-filters"),
     feedNameInput: document.getElementById("feed-name-input"),
@@ -364,6 +371,15 @@ function setupEventListeners() {
             DOM.keywordAddInput.value = "";
         }
     });
+
+    if (DOM.suggestKeywordsBtn) {
+        DOM.suggestKeywordsBtn.addEventListener("click", handleSuggestKeywords);
+    }
+    if (DOM.closeKeywordSuggestionsBtn) {
+        DOM.closeKeywordSuggestionsBtn.addEventListener("click", () => {
+            DOM.keywordSuggestionsPanel.style.display = "none";
+        });
+    }
     
     // Feeds Actions
     DOM.addFeedRowBtn.addEventListener("click", () => {
@@ -531,6 +547,10 @@ function updateAdminControls() {
         if (DOM.keywordFolderInput) DOM.keywordFolderInput.removeAttribute("disabled");
         if (DOM.keywordFolderSelect) DOM.keywordFolderSelect.removeAttribute("disabled");
         DOM.keywordAddInput.removeAttribute("disabled");
+        if (DOM.suggestKeywordsBtn) {
+            DOM.suggestKeywordsBtn.classList.remove("disabled");
+            DOM.suggestKeywordsBtn.removeAttribute("disabled");
+        }
         DOM.feedNameInput.removeAttribute("disabled");
         DOM.feedUrlInput.removeAttribute("disabled");
         DOM.addFeedRowBtn.classList.remove("disabled");
@@ -560,6 +580,10 @@ function updateAdminControls() {
         if (DOM.keywordFolderInput) DOM.keywordFolderInput.removeAttribute("disabled");
         if (DOM.keywordFolderSelect) DOM.keywordFolderSelect.removeAttribute("disabled");
         DOM.keywordAddInput.removeAttribute("disabled");
+        if (DOM.suggestKeywordsBtn) {
+            DOM.suggestKeywordsBtn.classList.remove("disabled");
+            DOM.suggestKeywordsBtn.removeAttribute("disabled");
+        }
         DOM.feedNameInput.removeAttribute("disabled");
         DOM.feedUrlInput.removeAttribute("disabled");
         
@@ -662,6 +686,7 @@ function onProfileChanged() {
     DOM.feedRowsContainer.innerHTML = "";
     profile.feeds.forEach(f => addFeedRowElement(f.name, f.feed_url));
     updateSettingsOverview(profile);
+    updateAdminControls();
     
     // Trigger reloading feeds and reports on active pane
     const activeTab = document.querySelector(".nav-item.active").getAttribute("data-tab");
@@ -816,6 +841,152 @@ function addKeywordTag(keyword, folder = "미분류") {
     const tags = Array.from(DOM.keywordTagsContainer.querySelectorAll(".keyword-tag")).map(t => t.getAttribute("data-keyword"));
     if (tags.includes(keyword)) return;
     addKeywordTagElement({ keyword, folder });
+}
+
+function getCurrentKeywordPayload() {
+    return Array.from(DOM.keywordTagsContainer.querySelectorAll(".keyword-tag"))
+                .map(t => ({
+                    keyword: t.getAttribute("data-keyword"),
+                    folder: t.getAttribute("data-folder") || "미분류"
+                }));
+}
+
+function ensureFolderOption(folder) {
+    if (!folder || !DOM.keywordFolderSelect) return;
+    const exists = Array.from(DOM.keywordFolderSelect.options).some(opt => opt.value === folder);
+    if (!exists) {
+        const opt = document.createElement("option");
+        opt.value = folder;
+        opt.textContent = folder;
+        DOM.keywordFolderSelect.insertBefore(opt, DOM.keywordFolderSelect.lastElementChild);
+    }
+}
+
+async function handleSuggestKeywords() {
+    if (!currentProfileId || !DOM.keywordSuggestionsPanel) return;
+    const seedKeyword = DOM.keywordAddInput.value.trim();
+    const keywords = getCurrentKeywordPayload();
+    
+    DOM.keywordSuggestionsPanel.style.display = "block";
+    DOM.keywordSuggestionsStatus.textContent = "AI가 연관 키워드와 폴더를 분석 중입니다...";
+    DOM.keywordSuggestionsList.innerHTML = "";
+    DOM.keywordFolderSuggestions.innerHTML = "";
+    DOM.keywordCleanupSuggestions.innerHTML = "";
+    DOM.suggestKeywordsBtn.setAttribute("disabled", "true");
+    DOM.suggestKeywordsBtn.classList.add("disabled");
+    
+    try {
+        const res = await fetch("/api/keywords/suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                seed_keyword: seedKeyword,
+                keywords
+            })
+        });
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "추천을 가져오지 못했습니다.");
+        }
+        
+        const data = await res.json();
+        renderKeywordSuggestions(data);
+    } catch (e) {
+        DOM.keywordSuggestionsStatus.textContent = `추천 실패: ${e.message}`;
+    } finally {
+        DOM.suggestKeywordsBtn.removeAttribute("disabled");
+        DOM.suggestKeywordsBtn.classList.remove("disabled");
+    }
+}
+
+function renderKeywordSuggestions(data) {
+    const suggestions = data.suggestions || [];
+    const folderSuggestions = data.folder_suggestions || [];
+    const cleanupSuggestions = data.cleanup_suggestions || [];
+    
+    DOM.keywordSuggestionsStatus.textContent = suggestions.length
+        ? "추가할 키워드를 선택하세요. 추가 후에는 프로필 설정 저장을 눌러야 반영됩니다."
+        : "새로 추천할 키워드가 많지 않습니다. 입력한 키워드를 조금 더 구체화해보세요.";
+    
+    DOM.keywordSuggestionsList.innerHTML = suggestions.length ? `
+        <div class="suggestions-bulk-actions">
+            <button type="button" class="btn secondary tiny" id="add-all-suggested-keywords-btn">추천 키워드 모두 추가</button>
+            <span>${suggestions.length}개 추천</span>
+        </div>
+        ${suggestions.map((item, idx) => `
+        <div class="keyword-suggestion-card">
+            <div>
+                <strong>${escapeHtml(item.keyword)}</strong>
+                <span class="suggestion-folder">${escapeHtml(item.folder || "미분류")}</span>
+                <p>${escapeHtml(item.reason || "연관 모니터링 키워드로 추천됩니다.")}</p>
+            </div>
+            <button type="button" class="btn tiny add-suggested-keyword" data-index="${idx}">추가</button>
+        </div>
+    `).join("")}
+    ` : "";
+
+    const addAllBtn = document.getElementById("add-all-suggested-keywords-btn");
+    if (addAllBtn) {
+        addAllBtn.addEventListener("click", () => {
+            let addedCount = 0;
+            suggestions.forEach(item => {
+                if (addSuggestedKeyword(item)) addedCount += 1;
+            });
+            DOM.keywordSuggestionsList.querySelectorAll(".add-suggested-keyword").forEach(btn => {
+                btn.textContent = "추가됨";
+                btn.setAttribute("disabled", "true");
+            });
+            addAllBtn.textContent = addedCount ? `${addedCount}개 추가됨` : "이미 모두 추가됨";
+            addAllBtn.setAttribute("disabled", "true");
+        });
+    }
+    
+    DOM.keywordSuggestionsList.querySelectorAll(".add-suggested-keyword").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const item = suggestions[Number(btn.dataset.index)];
+            if (!item) return;
+            if (addSuggestedKeyword(item)) {
+                btn.textContent = "추가됨";
+                btn.setAttribute("disabled", "true");
+            } else {
+                btn.textContent = "이미 있음";
+                btn.setAttribute("disabled", "true");
+            }
+        });
+    });
+    
+    DOM.keywordFolderSuggestions.innerHTML = folderSuggestions.length ? `
+        <div class="suggestion-section-title">추천 폴더</div>
+        ${folderSuggestions.map(item => `
+            <div class="suggestion-note">
+                <strong>${escapeHtml(item.folder || "")}</strong>
+                <span>${escapeHtml(item.reason || "")}</span>
+            </div>
+        `).join("")}
+    ` : "";
+    
+    DOM.keywordCleanupSuggestions.innerHTML = cleanupSuggestions.length ? `
+        <div class="suggestion-section-title">중복/표기 정리 제안</div>
+        ${cleanupSuggestions.map(item => `
+            <div class="suggestion-note">
+                <strong>${escapeHtml(item.canonical || "")}</strong>
+                <span>${escapeHtml((item.duplicates || []).join(", "))} ${item.reason ? "· " + escapeHtml(item.reason) : ""}</span>
+            </div>
+        `).join("")}
+    ` : "";
+}
+
+function addSuggestedKeyword(item) {
+    if (!item || !item.keyword) return false;
+    const existing = Array.from(DOM.keywordTagsContainer.querySelectorAll(".keyword-tag"))
+                          .map(t => (t.getAttribute("data-keyword") || "").toLowerCase());
+    if (existing.includes(item.keyword.toLowerCase())) return false;
+    const folder = item.folder || "미분류";
+    ensureFolderOption(folder);
+    addKeywordTag(item.keyword, folder);
+    return true;
 }
 
 function addFeedRowElement(name, url) {
