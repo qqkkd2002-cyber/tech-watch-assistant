@@ -11,6 +11,8 @@
     <link rel="stylesheet" href="style.css?v=20260608-status-light">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- Chart.js for Visualization Dashboard -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -40,10 +42,11 @@
                         <span class="status-dot-pulse idle js-status-dot" id="sidebar-status-dot"></span>
                         <span id="sidebar-status-text" class="status-badge idle js-status-text">대기 중 (Idle)</span>
                     </div>
-                    <div class="scan-btn-group">
+                    <div class="scan-btn-group" style="margin-bottom: 8px;">
                         <button id="start-scan-btn" class="btn success">▶️ 스캔 시작</button>
-                        <button id="stop-process-btn" class="btn danger disabled" disabled>🛑 스캔 중단</button>
+                        <button id="stop-process-btn" class="btn danger disabled" disabled>🛑 중단</button>
                     </div>
+                    <button id="retry-summary-btn" class="btn primary" style="width: 100%; border-radius: 8px; font-size: 12px; padding: 8px 10px; font-weight: 500; cursor: pointer; text-align: center; border: none; transition: all var(--transition-speed);">🔄 요약 대기 재시도</button>
                 </div>
             </div>
 
@@ -52,6 +55,18 @@
                 <a href="#guide" class="nav-item active" data-tab="guide">
                     <span class="nav-icon">❓</span>
                     <span class="nav-label">사용 설명서</span>
+                </a>
+                <a href="#dashboard-competitor" class="nav-item" data-tab="dashboard-competitor" id="nav-dashboard-parent">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-label">대시보드</span>
+                </a>
+                <a href="#dashboard-competitor" class="nav-item sub-item" data-tab="dashboard-competitor">
+                    <span class="nav-icon">🏢</span>
+                    <span class="nav-label">경쟁사 동향</span>
+                </a>
+                <a href="#dashboard-trend" class="nav-item sub-item" data-tab="dashboard-trend">
+                    <span class="nav-icon">🔥</span>
+                    <span class="nav-label">기술 트렌드</span>
                 </a>
                 <a href="#feed" class="nav-item" data-tab="feed">
                     <span class="nav-icon">📰</span>
@@ -87,6 +102,105 @@
 
         <!-- Main Content Area -->
         <main class="main-content">
+            <!-- Competitor Dashboard Tab -->
+            <section id="dashboard-competitor-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>경쟁사 동향 대시보드</h2>
+                        <p class="subtitle">수집된 경쟁사의 기술 릴리즈 분석 및 기술 블로그 동향을 다각도로 분석합니다.</p>
+                    </div>
+                </header>
+                
+                <div class="dashboard-stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">🏷️</span>
+                        <div class="stat-info">
+                            <span class="stat-label">주요 기술 테마</span>
+                            <strong id="stat-top-theme">-</strong>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-icon">⚡</span>
+                        <div class="stat-info">
+                            <span class="stat-label">가장 활발한 경쟁사</span>
+                            <strong id="stat-most-active-competitor">-</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-charts-row">
+                    <div class="chart-container-card">
+                        <h3>경쟁사별 핵심 기술 집중도 (AI 분석 태그 비교)</h3>
+                        <div class="chart-wrapper">
+                            <canvas id="competitorChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-container-card">
+                        <h3>기술 레퍼런스 블로그별 최신 업데이트</h3>
+                        <div class="widget-wrapper scrollable-widget" id="reference-latest-widget">
+                            <!-- Dynamically loaded reference list -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-charts-row">
+                    <div class="chart-container-card">
+                        <h3>경쟁사 기능 출시 핵심 기술 태그 (AI 분석)</h3>
+                        <div class="chart-wrapper">
+                            <canvas id="tagChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-container-card">
+                        <h3>경쟁사별 최신 릴리즈 분석 (최근 3개 소식 요약)</h3>
+                        <div class="widget-wrapper scrollable-widget" id="competitor-latest-widget" style="max-height: 320px;">
+                            <!-- Dynamically loaded competitor releases widget -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Trend Dashboard Tab -->
+            <section id="dashboard-trend-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>기술 트렌드 대시보드</h2>
+                        <p class="subtitle">수집된 글로벌 및 국내 기술 뉴스 분석과 주요 관심 키워드 빈도를 추적합니다.</p>
+                    </div>
+                </header>
+                
+                <div class="dashboard-stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">🔍</span>
+                        <div class="stat-info">
+                            <span class="stat-label">주요 관심 키워드</span>
+                            <strong id="stat-top-keyword">-</strong>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-icon">⭐</span>
+                        <div class="stat-info">
+                            <span class="stat-label">검증된 중요 기술 신호</span>
+                            <strong id="stat-starred-signals">0건 검증됨</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-charts-row">
+                    <div class="chart-container-card">
+                        <h3>인기 키워드 (수집 트렌드 빈도)</h3>
+                        <div class="chart-wrapper">
+                            <canvas id="keywordChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-container-card">
+                        <h3>기술 트렌드 최신 소식 (최근 뉴스 5선)</h3>
+                        <div class="widget-wrapper scrollable-widget" id="trend-latest-widget" style="max-height: 320px;">
+                            <!-- Dynamically loaded trend latest widget -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Feed Tab -->
             <section id="feed-tab" class="tab-pane">
                 <header class="content-header">
@@ -102,6 +216,7 @@
                         <div class="feed-filters">
                             <button class="filter-btn active" data-filter="all">전체</button>
                             <button class="filter-btn" data-filter="docs">경쟁사 문서</button>
+                            <button class="filter-btn" data-filter="references">기술 레퍼런스</button>
                             <button class="filter-btn" data-filter="trends">키워드 뉴스</button>
                         </div>
                     </div>
@@ -121,8 +236,19 @@
                         <h3>표시할 데이터가 없습니다</h3>
                         <p>아직 수집된 정보가 없거나 검색 결과가 없습니다. 좌측 상단 [▶️ 스캔 시작]을 클릭해 보세요.</p>
                     </div>
-                    <div class="feed-grid" id="feed-items-grid">
-                        <!-- Feed Cards loaded dynamically -->
+                    <div class="feed-columns-container" id="feed-items-grid">
+                        <div class="feed-column" id="feed-col-competitor">
+                            <div class="column-header">🏢 경쟁사 업데이트 <span class="count-badge" id="feed-count-competitor">0</span></div>
+                            <div class="column-items" id="feed-items-competitor"></div>
+                        </div>
+                        <div class="feed-column" id="feed-col-reference">
+                            <div class="column-header">📚 기술 레퍼런스 <span class="count-badge" id="feed-count-reference">0</span></div>
+                            <div class="column-items" id="feed-items-reference"></div>
+                        </div>
+                        <div class="feed-column" id="feed-col-trend">
+                            <div class="column-header">🔥 기술 트렌드 뉴스 <span class="count-badge" id="feed-count-trend">0</span></div>
+                            <div class="column-items" id="feed-items-trend"></div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -142,6 +268,7 @@
                         <div class="feed-filters" id="starred-feed-filters">
                             <button class="starred-filter-btn filter-btn active" data-filter="all">전체</button>
                             <button class="starred-filter-btn filter-btn" data-filter="docs">경쟁사 문서</button>
+                            <button class="starred-filter-btn filter-btn" data-filter="references">기술 레퍼런스</button>
                             <button class="starred-filter-btn filter-btn" data-filter="trends">키워드 뉴스</button>
                         </div>
                         <button id="compile-starred-report-btn" class="glass-btn" style="background: linear-gradient(135deg, var(--color-purple), var(--color-accent)); color: white; border: none; font-weight: 500;">⭐ 중요 보관함 기반 보고서 생성</button>
@@ -162,8 +289,19 @@
                         <h3>중요 보관함이 비어 있습니다</h3>
                         <p>모니터링 피드에서 핵심 정보의 별표(★)를 눌러 여기에 추가해 보세요.</p>
                     </div>
-                    <div class="feed-grid" id="starred-items-grid">
-                        <!-- Starred cards loaded dynamically -->
+                    <div class="feed-columns-container" id="starred-items-grid">
+                        <div class="feed-column" id="starred-col-competitor">
+                            <div class="column-header">🏢 경쟁사 업데이트 <span class="count-badge" id="starred-count-competitor">0</span></div>
+                            <div class="column-items" id="starred-items-competitor"></div>
+                        </div>
+                        <div class="feed-column" id="starred-col-reference">
+                            <div class="column-header">📚 기술 레퍼런스 <span class="count-badge" id="starred-count-reference">0</span></div>
+                            <div class="column-items" id="starred-items-reference"></div>
+                        </div>
+                        <div class="feed-column" id="starred-col-trend">
+                            <div class="column-header">🔥 기술 트렌드 뉴스 <span class="count-badge" id="starred-count-trend">0</span></div>
+                            <div class="column-items" id="starred-items-trend"></div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -379,9 +517,10 @@
                         </div>
                     </div>
 
-                    <!-- Column 2: Feeds -->
-                    <div class="settings-column">
-                        <div class="settings-card full-height">
+                    <!-- Column 2: Feeds & Tech Blogs -->
+                    <div class="settings-column" style="display: flex; flex-direction: column; gap: 20px;">
+                        <!-- 경쟁사 피드 카드 -->
+                        <div class="settings-card">
                             <h3>수집 대상 경쟁사 제품 & RSS 피드</h3>
                             <div class="feed-add-form">
                                 <input type="text" id="feed-name-input" placeholder="경쟁사/제품 이름 (예: GitLab)" disabled>
@@ -411,6 +550,42 @@
                                     </thead>
                                     <tbody id="feed-rows-container">
                                         <!-- Feed rows dynamically loaded -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- 기술 블로그 레퍼런스 카드 -->
+                        <div class="settings-card">
+                            <h3>수집 대상 기술 블로그 & 레퍼런스 피드</h3>
+                            <div class="feed-add-form">
+                                <input type="text" id="ref-name-input" placeholder="블로그/레퍼런스 이름 (예: Toss Tech)" disabled>
+                                <input type="text" id="ref-url-input" placeholder="RSS/Atom Feed URL" disabled>
+                                <button id="add-ref-row-btn" class="btn primary disabled" disabled>추가</button>
+                            </div>
+                            <div class="feed-ai-tools">
+                                <button type="button" id="suggest-refs-btn" class="btn secondary disabled" disabled>AI 기술블로그/RSS 추천</button>
+                                <span class="help-text">현재 키워드와 피드 목록을 바탕으로 추천 블로그, 공식 테크 블로그, 릴리즈/RSS 후보를 추천하고 URL 접속 여부를 검증합니다.</span>
+                            </div>
+                            <div class="feed-suggestions-panel" id="ref-suggestions-panel" style="display: none;">
+                                <div class="suggestions-header">
+                                    <strong>AI 추천 블로그 검증 결과</strong>
+                                    <button type="button" id="close-ref-suggestions-btn" class="ghost-btn">닫기</button>
+                                </div>
+                                <div id="ref-suggestions-status" class="suggestions-status"></div>
+                                <div id="ref-suggestions-list" class="feed-suggestions-list"></div>
+                            </div>
+                            <div class="feed-table-container">
+                                <table class="feed-table">
+                                    <thead>
+                                        <tr>
+                                            <th>이름</th>
+                                            <th>피드 URL</th>
+                                            <th class="actions-col">동작</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="ref-rows-container">
+                                        <!-- Reference feed rows dynamically loaded -->
                                     </tbody>
                                 </table>
                             </div>

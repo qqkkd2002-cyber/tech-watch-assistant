@@ -8,6 +8,7 @@ import asyncio
 import os
 import json
 import argparse
+import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
@@ -26,6 +27,44 @@ FOLDER_TRENDS = "Tech Watch - Trends"
 FOLDER_REPORTS = "Tech Watch - Reports"
 NEWS_RECENCY_DAYS = 2
 ALERT_FRESHNESS_HOURS = 168
+ai_cooldown_until = None
+
+def is_quota_error(error_text: str) -> bool:
+    lowered = (error_text or "").lower()
+    return "429" in lowered or "quota" in lowered or "rate-limit" in lowered or "rate limit" in lowered
+
+def get_retry_seconds(error_text: str, default_seconds: int = 300) -> int:
+    match = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", error_text or "", re.IGNORECASE)
+    if not match:
+        return default_seconds
+    return max(int(float(match.group(1))) + 5, 30)
+
+def set_ai_cooldown(error_text: str):
+    global ai_cooldown_until
+    retry_seconds = get_retry_seconds(error_text)
+    ai_cooldown_until = datetime.now() + timedelta(seconds=retry_seconds)
+    print(f"[Gemini Quota] AI calls paused for about {retry_seconds}s. New items will be saved as 'AI 요약 대기'.")
+
+def is_ai_cooling_down() -> bool:
+    return ai_cooldown_until is not None and datetime.now() < ai_cooldown_until
+
+def pending_doc_analysis(reason: str = "") -> dict:
+    return {
+        "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
+        "impact": "AI 분석 대기 중입니다. 다음 스캔에서 요약을 다시 시도합니다.",
+        "keywords": ["AI 요약 대기"],
+        "analysis_status": "pending",
+        "analysis_error": reason[:300]
+    }
+
+def pending_trend_analysis(article: dict, reason: str = "") -> dict:
+    return {
+        "title": article.get("title", "제목 확인 필요"),
+        "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
+        "source": "AI 요약 대기",
+        "analysis_status": "pending",
+        "analysis_error": reason[:300]
+    }
 
 def parse_source_datetime(date_text: str):
     """Parse common RSS/Atom date formats into a timezone-aware datetime."""
@@ -87,21 +126,50 @@ Keywords: <Comma-separated keywords, e.g., Security, CI/CD, AI, Cloud>
         response = await agent.chat(prompt)
         text = await response.text()
         
-        # Parse the output
+        # Robust parsing logic
         lines = text.strip().split("\n")
-        summary = "No summary generated."
-        impact = "No impact analysis generated."
-        keywords = ["General"]
+        summary = ""
+        impact = ""
+        keywords_str = ""
+        current_section = None
         
         for line in lines:
-            if line.startswith("Summary:") or line.startswith("요약:"):
-                summary = line.split(":", 1)[1].strip()
-            elif line.startswith("Impact:") or line.startswith("영향:") or line.startswith("효과:"):
-                impact = line.split(":", 1)[1].strip()
-            elif line.startswith("Keywords:") or line.startswith("키워드:"):
-                kw_str = line.split(":", 1)[1].strip()
-                keywords = [k.strip() for k in kw_str.split(",") if k.strip()]
+            clean_line = line.replace("**", "").replace("__", "").replace("*", "").replace("-", "").strip()
+            clean_line_lower = clean_line.lower()
+            
+            is_header = False
+            if clean_line_lower.startswith("summary") or "요약" in clean_line:
+                current_section = "summary"
+                is_header = True
+            elif clean_line_lower.startswith("impact") or "영향" in clean_line or "효과" in clean_line:
+                current_section = "impact"
+                is_header = True
+            elif clean_line_lower.startswith("keywords") or "키워드" in clean_line:
+                current_section = "keywords"
+                is_header = True
                 
+            if is_header:
+                if ":" in clean_line:
+                    content = clean_line.split(":", 1)[1].strip()
+                    if content:
+                        if current_section == "summary":
+                            summary = content
+                        elif current_section == "impact":
+                            impact = content
+                        elif current_section == "keywords":
+                            keywords_str = content
+            else:
+                if current_section == "summary":
+                    summary += (" " + clean_line if summary else clean_line)
+                elif current_section == "impact":
+                    impact += (" " + clean_line if impact else clean_line)
+                elif current_section == "keywords":
+                    keywords_str += (" " + clean_line if keywords_str else clean_line)
+                    
+        summary = summary.strip() or "No summary generated."
+        impact = impact.strip() or "No impact analysis generated."
+        keywords = [k.strip() for k in keywords_str.split(",") if k.strip()] if keywords_str.strip() else ["General"]
+        
         return {
             "summary": summary,
             "impact": impact,
@@ -143,20 +211,50 @@ Source: <The publisher or news channel if available, or 'Web'>
         if text.strip().upper() == "SKIP" or "SKIP" in text.strip()[:10].upper():
             return None
             
-        # Parse the output
+        # Robust parsing logic
         lines = text.strip().split("\n")
-        clean_title = article['title']
-        summary = "No summary generated."
-        source = "News"
+        clean_title = article.get('title', '제목 확인 필요')
+        summary = ""
+        source = ""
+        current_section = None
         
         for line in lines:
-            if line.startswith("Title:") or line.startswith("제목:"):
-                clean_title = line.split(":", 1)[1].strip()
-            elif line.startswith("Summary:") or line.startswith("요약:"):
-                summary = line.split(":", 1)[1].strip()
-            elif line.startswith("Source:") or line.startswith("출처:"):
-                source = line.split(":", 1)[1].strip()
+            clean_line = line.replace("**", "").replace("__", "").replace("*", "").replace("-", "").strip()
+            clean_line_lower = clean_line.lower()
+            
+            is_header = False
+            if clean_line_lower.startswith("title") or "제목" in clean_line:
+                current_section = "title"
+                is_header = True
+            elif clean_line_lower.startswith("summary") or "요약" in clean_line:
+                current_section = "summary"
+                is_header = True
+            elif clean_line_lower.startswith("source") or "출처" in clean_line:
+                current_section = "source"
+                is_header = True
                 
+            if is_header:
+                if ":" in clean_line:
+                    content = clean_line.split(":", 1)[1].strip()
+                    if content:
+                        if current_section == "title":
+                            clean_title = content
+                        elif current_section == "summary":
+                            summary = content
+                        elif current_section == "source":
+                            source = content
+            else:
+                if current_section == "title":
+                    clean_title = (" " + clean_line if clean_title != article.get('title') else clean_line)
+                elif current_section == "summary":
+                    summary += (" " + clean_line if summary else clean_line)
+                elif current_section == "source":
+                    source += (" " + clean_line if source else clean_line)
+                    
+        clean_title = clean_title.strip() or article.get('title', '제목 확인 필요')
+        summary = summary.strip() or "No summary generated."
+        source = source.strip() or "News"
+        
         return {
             "title": clean_title,
             "summary": summary,
@@ -241,6 +339,7 @@ async def retry_pending_ai_analysis(agent: Agent, profile_id: int):
             )
         else:
             print(f"Doc still pending: {doc.get('title', '')}")
+            database.increment_doc_retry(doc["id"], analysis.get("analysis_error", "Unknown error"))
     
     for trend in pending_trends:
         print(f"Retrying trend AI summary: {trend.get('title', '')}")
@@ -258,8 +357,12 @@ async def retry_pending_ai_analysis(agent: Agent, profile_id: int):
                 "complete",
                 ""
             )
+        elif analysis is None:
+            print(f"Trend item was skipped by AI (noise). Deleting: {trend.get('title', '')}")
+            database.delete_scanned_trend(trend["id"])
         else:
             print(f"Trend still pending: {trend.get('title', '')}")
+            database.increment_trend_retry(trend["id"], analysis.get("analysis_error", "Unknown error"))
 
 async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
     """Runs a single monitoring scan for a specific profile."""
@@ -325,12 +428,13 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                 title=title,
                 link=update['link'],
                 date=update['date'],
-                summary=analysis['summary'],
+                summary=update.get('description', '') if analysis.get("analysis_status") == "pending" else analysis['summary'],
                 impact=analysis['impact'],
                 keywords=analysis['keywords'],
                 published_at=published_at,
                 analysis_status=analysis.get("analysis_status", "complete"),
-                analysis_error=analysis.get("analysis_error", "")
+                analysis_error=analysis.get("analysis_error", ""),
+                doc_type=doc.get("feed_type", "competitor")
             )
             
             if saved:
@@ -414,7 +518,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                 keyword=keyword,
                 title=note_title,
                 link=article['link'],
-                summary=analysis['summary'],
+                summary=article.get('description', '') if analysis.get("analysis_status") == "pending" else analysis['summary'],
                 source=analysis['source'],
                 published_at=published_at,
                 analysis_status=analysis.get("analysis_status", "complete"),
@@ -597,6 +701,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Tech Watch Tracker Agent")
     parser.add_argument("--profile-id", type=int, help="Run only for the specified profile ID. If omitted, runs for all profiles.")
     parser.add_argument("--report-only", action="store_true", help="Generate the strategic report immediately and exit.")
+    parser.add_argument("--retry-only", action="store_true", help="Retry pending AI analyses only and exit.")
     parser.add_argument("--report-type", choices=["weekly", "monthly"], default="weekly", help="Report type to generate when using --report-only or scheduled reporting.")
     parser.add_argument("--scope-folder", default="", help="Generate a manual report scoped to a keyword folder.")
     parser.add_argument("--scope-keyword", default="", help="Generate a manual report scoped to a specific keyword/search term.")
@@ -665,6 +770,8 @@ async def main():
                         scope_keyword=args.scope_keyword.strip(),
                         keyword_match_mode=args.keyword_match_mode
                     )
+                elif args.retry_only:
+                    await retry_pending_ai_analysis(agent, profile['id'])
                 else:
                     # 1. Run the scanning process for competitor documentation and keyword news
                     await run_monitoring_scan_for_profile(agent, profile)

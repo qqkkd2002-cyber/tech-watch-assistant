@@ -66,6 +66,7 @@ def get_admin_passcode() -> str:
 class FeedItem(BaseModel):
     name: str
     feed_url: str
+    feed_type: str = 'competitor'
 
 class KeywordItem(BaseModel):
     keyword: str
@@ -100,6 +101,7 @@ class FeedSuggestionRequest(BaseModel):
     seed_topic: str = ""
     keywords: List[KeywordItem] = []
     feeds: List[FeedItem] = []
+    feed_type: str = 'competitor'
 
 def extract_json_object(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
@@ -227,6 +229,34 @@ def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
     
     return True
 
+auto_retry_task: Optional[asyncio.Task] = None
+
+async def auto_retry_scheduler():
+    """Periodically checks for pending AI summaries and runs retry-only agent runs."""
+    active_logs.append("[System] Auto retry scheduler started.\n")
+    while True:
+        try:
+            if scan_status == "idle":
+                for profile_row in database.get_profiles():
+                    profile = dict(profile_row)
+                    profile_id = profile["id"]
+                    
+                    # Check if there are any pending docs or trends
+                    pending_docs = database.get_pending_ai_docs(profile_id, limit=1)
+                    pending_trends = database.get_pending_ai_trends(profile_id, limit=1)
+                    
+                    if pending_docs or pending_trends:
+                        active_logs.append(
+                            f"[System] Auto retry triggered for profile '{profile['name']}' "
+                            f"({len(pending_docs) + len(pending_trends)} pending items found).\n"
+                        )
+                        asyncio.create_task(run_agent_subprocess(["--profile-id", str(profile_id), "--retry-only"], profile_id))
+                        break
+        except Exception as e:
+            active_logs.append(f"[System] Auto retry scheduler error: {e}\n")
+        # Run every 10 minutes (600 seconds)
+        await asyncio.sleep(600)
+
 async def auto_scan_scheduler():
     """Runs profile scans on the configured interval while the web server is alive."""
     active_logs.append("[System] Auto scan scheduler started.\n")
@@ -252,14 +282,19 @@ async def auto_scan_scheduler():
 
 @app.on_event("startup")
 async def start_auto_scan_scheduler():
-    global auto_scheduler_task
+    global auto_scheduler_task, auto_retry_task
     if auto_scheduler_task is None or auto_scheduler_task.done():
         auto_scheduler_task = asyncio.create_task(auto_scan_scheduler())
+    if auto_retry_task is None or auto_retry_task.done():
+        auto_retry_task = asyncio.create_task(auto_retry_scheduler())
 
 @app.on_event("shutdown")
 async def stop_auto_scan_scheduler():
+    global auto_scheduler_task, auto_retry_task
     if auto_scheduler_task and not auto_scheduler_task.done():
         auto_scheduler_task.cancel()
+    if auto_retry_task and not auto_retry_task.done():
+        auto_retry_task.cancel()
 
 # --- Background Task ---
 async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None):
@@ -354,6 +389,22 @@ async def trigger_scan(profile_id: Optional[int] = None, background_tasks: Backg
         
     background_tasks.add_task(run_agent_subprocess, args, profile_id)
     return {"message": "Scan started in background."}
+
+@app.post("/api/scan/retry")
+async def trigger_retry(profile_id: Optional[int] = None, background_tasks: BackgroundTasks = BackgroundTasks()):
+    """Triggers an async retry for pending AI summaries."""
+    global scan_status
+    if scan_status == "running":
+        raise HTTPException(status_code=400, detail="Another scan process is already running.")
+        
+    args = ["--retry-only"]
+    if profile_id:
+        args += ["--profile-id", str(profile_id)]
+        # Reset retry counts so they get retried
+        database.reset_pending_retry_count(profile_id)
+        
+    background_tasks.add_task(run_agent_subprocess, args, profile_id)
+    return {"message": "AI summary retry started in background."}
 
 @app.post("/api/report/generate")
 async def trigger_report(profile_id: int, starred_only: bool = False, report_type: str = "weekly", scope_folder: str = "", scope_keyword: str = "", keyword_match_mode: str = "any", background_tasks: BackgroundTasks = BackgroundTasks()):
@@ -491,6 +542,7 @@ async def suggest_feeds(payload: FeedSuggestionRequest):
     current_keywords = payload.keywords or database.get_profile_keywords(payload.profile_id)
     current_feeds = payload.feeds or database.get_profile_feeds(payload.profile_id)
     seed_topic = payload.seed_topic.strip()
+    feed_type = payload.feed_type.strip().lower() or 'competitor'
 
     keyword_lines = "\n".join([
         f"- {item.keyword} (folder: {item.folder or '미분류'})" if isinstance(item, KeywordItem)
@@ -507,7 +559,47 @@ async def suggest_feeds(payload: FeedSuggestionRequest):
         for item in current_feeds
     }
 
-    prompt = f"""
+    if feed_type == 'reference':
+        prompt = f"""
+You are helping a Korean solution strategy team configure technology reference and engineering blog monitoring sources.
+
+Seed topic from the user:
+{seed_topic or "(none)"}
+
+Current monitoring keywords:
+{keyword_lines or "(none)"}
+
+Current RSS/docs sources:
+{feed_lines or "(none)"}
+
+Suggest official tech blogs, developer blogs, engineering blogs, research blogs (e.g. Netflix Tech Blog, Toss Tech Blog, CNCF Blog, Spotify Engineering Blog) relevant to the keywords.
+
+Rules:
+- Respond ONLY as valid JSON.
+- Do not include markdown fences.
+- Prefer official engineering blogs, research lab blogs, high-quality technical reference sites, and developer publications.
+- Do not invent obscure URLs. Use URLs you are confident exist.
+- Do not include URLs already present in the current source list.
+- Include both direct RSS/Atom URLs and useful docs/blog pages when appropriate.
+- For category, use one of: "blog", "reference", "community", "other".
+- reason must be Korean and concise.
+
+JSON schema:
+{{
+  "suggestions": [
+    {{
+      "name": "source display name",
+      "url": "https://example.com/feed.xml",
+      "category": "blog|reference|community|other",
+      "reason": "short Korean reason",
+      "priority": "high|medium|low"
+    }}
+  ]
+}}
+"""
+        system_instruction = "You recommend reliable tech and engineering blog monitoring sources. Always output valid JSON only."
+    else:
+        prompt = f"""
 You are helping a Korean solution strategy team configure competitor/product monitoring sources.
 
 Seed topic from the user:
@@ -544,10 +636,11 @@ JSON schema:
   ]
 }}
 """
+        system_instruction = "You recommend reliable competitor monitoring sources. Always output valid JSON only."
 
     sdk_config = LocalAgentConfig(
         api_key=api_key,
-        system_instructions="You recommend reliable competitor monitoring sources. Always output valid JSON only."
+        system_instructions=system_instruction
     )
 
     try:
@@ -577,6 +670,7 @@ JSON schema:
             "category": str(item.get("category", "other")).strip() or "other",
             "reason": str(item.get("reason", "")).strip(),
             "priority": str(item.get("priority", "medium")).strip() or "medium",
+            "feed_type": feed_type,
             "validation": validation
         })
 
@@ -697,7 +791,7 @@ async def api_update_profile(profile_id: int, payload: ProfileUpdatePayload, req
     database.set_profile_keywords(profile_id, keyword_dicts)
     
     # 3. Update feeds
-    feed_list = [{"name": f.name, "feed_url": f.feed_url} for f in payload.feeds]
+    feed_list = [{"name": f.name, "feed_url": f.feed_url, "feed_type": f.feed_type} for f in payload.feeds]
     database.set_profile_feeds(profile_id, feed_list)
     
     return {"message": "Profile updated successfully."}
@@ -714,10 +808,19 @@ async def api_delete_profile(profile_id: int, request: Request):
 
 # --- Feeds and Reports Data API ---
 
+@app.get("/api/stats")
+async def api_get_stats(profile_id: int):
+    """Retrieves aggregated statistics for the dashboard visualization charts."""
+    try:
+        stats = database.get_profile_stats(profile_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {e}")
+
 @app.get("/api/docs")
-async def api_get_docs(profile_id: int, search: str = "", limit: int = 50, offset: int = 0, starred_only: bool = False):
+async def api_get_docs(profile_id: int, search: str = "", limit: int = 50, offset: int = 0, starred_only: bool = False, doc_type: Optional[str] = None):
     """Retrieves competitor documentation updates for a profile."""
-    docs = database.get_docs(profile_id=profile_id, limit=limit, offset=offset, search=search, starred_only=starred_only)
+    docs = database.get_docs(profile_id=profile_id, limit=limit, offset=offset, search=search, starred_only=starred_only, doc_type=doc_type)
     return docs
 
 @app.get("/api/trends")

@@ -145,6 +145,8 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN analysis_status TEXT DEFAULT 'complete'")
     if 'analysis_error' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN analysis_error TEXT DEFAULT ''")
+    if 'retry_count' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN retry_count INTEGER DEFAULT 0")
         
     # Alter scanned_trends table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_trends)")
@@ -157,6 +159,8 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_status TEXT DEFAULT 'complete'")
     if 'analysis_error' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_error TEXT DEFAULT ''")
+    if 'retry_count' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN retry_count INTEGER DEFAULT 0")
         
     # Alter profile_keywords table to add folder column if missing
     cursor.execute("PRAGMA table_info(profile_keywords)")
@@ -171,6 +175,18 @@ def init_db():
         cursor.execute("ALTER TABLE reports ADD COLUMN report_type TEXT DEFAULT 'weekly'")
     if 'period_key' not in report_cols:
         cursor.execute("ALTER TABLE reports ADD COLUMN period_key TEXT DEFAULT ''")
+
+    # Alter profile_feeds table to add feed_type column if missing
+    cursor.execute("PRAGMA table_info(profile_feeds)")
+    feed_cols = [row['name'] for row in cursor.fetchall()]
+    if 'feed_type' not in feed_cols:
+        cursor.execute("ALTER TABLE profile_feeds ADD COLUMN feed_type TEXT DEFAULT 'competitor'")
+
+    # Alter scanned_docs table to add doc_type column if missing
+    cursor.execute("PRAGMA table_info(scanned_docs)")
+    doc_cols = [row['name'] for row in cursor.fetchall()]
+    if 'doc_type' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN doc_type TEXT DEFAULT 'competitor'")
         
     conn.commit()
     
@@ -449,10 +465,11 @@ def set_profile_feeds(profile_id: int, feeds: List[Dict[str, str]]):
         for feed in feeds:
             name = feed.get("name", "").strip()
             url = feed.get("feed_url", "").strip()
+            feed_type = feed.get("feed_type", "competitor").strip() or "competitor"
             if name and url:
                 cursor.execute(
-                    "INSERT INTO profile_feeds (profile_id, name, feed_url) VALUES (?, ?, ?)",
-                    (profile_id, name, url)
+                    "INSERT INTO profile_feeds (profile_id, name, feed_url, feed_type) VALUES (?, ?, ?, ?)",
+                    (profile_id, name, url, feed_type)
                 )
         conn.commit()
     finally:
@@ -468,15 +485,15 @@ def get_scanned_doc_titles(profile_id: int) -> List[str]:
     conn.close()
     return [r['title'] for r in rows]
 
-def save_scanned_doc(profile_id: int, competitor: str, title: str, link: str, date: str, summary: str, impact: str, keywords: List[str], published_at: str = "", analysis_status: str = "complete", analysis_error: str = "") -> bool:
+def save_scanned_doc(profile_id: int, competitor: str, title: str, link: str, date: str, summary: str, impact: str, keywords: List[str], published_at: str = "", analysis_status: str = "complete", analysis_error: str = "", doc_type: str = "competitor") -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
     kw_str = ", ".join(keywords)
     try:
         cursor.execute(
-            """INSERT INTO scanned_docs (profile_id, competitor, title, link, date, summary, impact, keywords, published_at, analysis_status, analysis_error) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, competitor, title, link, date, summary, impact, kw_str, published_at, analysis_status, analysis_error)
+            """INSERT INTO scanned_docs (profile_id, competitor, title, link, date, summary, impact, keywords, published_at, analysis_status, analysis_error, doc_type) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (profile_id, competitor, title, link, date, summary, impact, kw_str, published_at, analysis_status, analysis_error, doc_type)
         )
         conn.commit()
         return True
@@ -522,7 +539,7 @@ def get_pending_ai_docs(profile_id: int, limit: int = 20) -> List[Dict[str, Any]
     cursor = conn.cursor()
     cursor.execute(
         """SELECT * FROM scanned_docs
-           WHERE profile_id = ? AND analysis_status = 'pending'
+           WHERE profile_id = ? AND analysis_status = 'pending' AND retry_count < 5
            ORDER BY created_at ASC LIMIT ?""",
         (profile_id, limit)
     )
@@ -550,7 +567,7 @@ def get_pending_ai_trends(profile_id: int, limit: int = 20) -> List[Dict[str, An
     cursor = conn.cursor()
     cursor.execute(
         """SELECT * FROM scanned_trends
-           WHERE profile_id = ? AND analysis_status = 'pending'
+           WHERE profile_id = ? AND analysis_status = 'pending' AND retry_count < 5
            ORDER BY created_at ASC LIMIT ?""",
         (profile_id, limit)
     )
@@ -573,13 +590,77 @@ def update_trend_analysis(trend_id: int, title: str, summary: str, source: str, 
     finally:
         conn.close()
 
-def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False, match_mode: str = "any") -> List[Dict[str, Any]]:
+def increment_doc_retry(doc_id: int, error_msg: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE scanned_docs
+               SET retry_count = retry_count + 1, analysis_error = ?
+               WHERE id = ?""",
+            (error_msg, doc_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def increment_trend_retry(trend_id: int, error_msg: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE scanned_trends
+               SET retry_count = retry_count + 1, analysis_error = ?
+               WHERE id = ?""",
+            (error_msg, trend_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def delete_scanned_trend(trend_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM scanned_trends WHERE id = ?", (trend_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[Database] Error deleting scanned trend: {e}")
+        return False
+    finally:
+        conn.close()
+
+def reset_pending_retry_count(profile_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE scanned_docs
+               SET retry_count = 0
+               WHERE profile_id = ? AND analysis_status = 'pending'""",
+            (profile_id,)
+        )
+        cursor.execute(
+            """UPDATE scanned_trends
+               SET retry_count = 0
+               WHERE profile_id = ? AND analysis_status = 'pending'""",
+            (profile_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False, match_mode: str = "any", doc_type: str = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
     conditions = ["profile_id = ?"]
     params = [profile_id]
     if starred_only:
         conditions.append("is_starred = 1")
+    if doc_type:
+        conditions.append("doc_type = ?")
+        params.append(doc_type)
     keywords = [k.strip() for k in search.split(",") if k.strip()]
     if keywords:
         keyword_clauses = []
@@ -630,6 +711,228 @@ def get_trends(profile_id: int, limit: int = 50, offset: int = 0, search: str = 
             d["folder"] = "미분류"
         res.append(d)
     return res
+
+def get_profile_stats(profile_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 1. Total docs (competitors) count
+    cursor.execute("SELECT COUNT(*) FROM scanned_docs WHERE profile_id = ? AND doc_type = 'competitor'", (profile_id,))
+    total_docs = cursor.fetchone()[0]
+    
+    # 1b. Total reference count
+    cursor.execute("SELECT COUNT(*) FROM scanned_docs WHERE profile_id = ? AND doc_type = 'reference'", (profile_id,))
+    total_references = cursor.fetchone()[0]
+    
+    # 2. Total trends count
+    cursor.execute("SELECT COUNT(*) FROM scanned_trends WHERE profile_id = ?", (profile_id,))
+    total_trends = cursor.fetchone()[0]
+    
+    # 3. Total starred docs count
+    cursor.execute("SELECT COUNT(*) FROM scanned_docs WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    starred_docs = cursor.fetchone()[0]
+    
+    # 4. Total starred trends count
+    cursor.execute("SELECT COUNT(*) FROM scanned_trends WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    starred_trends = cursor.fetchone()[0]
+    
+    # 5. Competitor stats (grouped by competitor, filtered by competitor doc_type)
+    cursor.execute("""
+        SELECT competitor, COUNT(*) as count 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'competitor'
+        GROUP BY competitor 
+        ORDER BY count DESC
+    """, (profile_id,))
+    competitors = [{"name": r["competitor"], "value": r["count"]} for r in cursor.fetchall()]
+    
+    # 5b. Reference stats (grouped by competitor, filtered by reference doc_type)
+    cursor.execute("""
+        SELECT competitor, COUNT(*) as count 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'reference'
+        GROUP BY competitor 
+        ORDER BY count DESC
+    """, (profile_id,))
+    references = [{"name": r["competitor"], "value": r["count"]} for r in cursor.fetchall()]
+    
+    # 6. Keyword stats
+    cursor.execute("""
+        SELECT keyword, COUNT(*) as count 
+        FROM scanned_trends 
+        WHERE profile_id = ? 
+        GROUP BY keyword 
+        ORDER BY count DESC
+    """, (profile_id,))
+    keywords = [{"name": r["keyword"], "value": r["count"]} for r in cursor.fetchall()]
+    
+    # 7. Daily activity (past 14 days)
+    cursor.execute("""
+        SELECT DATE(created_at) as day, COUNT(*) as count
+        FROM scanned_docs
+        WHERE profile_id = ? AND created_at >= datetime('now', '-14 days')
+        GROUP BY day
+    """, (profile_id,))
+    daily_docs = {r["day"]: r["count"] for r in cursor.fetchall()}
+    
+    cursor.execute("""
+        SELECT DATE(created_at) as day, COUNT(*) as count
+        FROM scanned_trends
+        WHERE profile_id = ? AND created_at >= datetime('now', '-14 days')
+        GROUP BY day
+    """, (profile_id,))
+    daily_trends = {r["day"]: r["count"] for r in cursor.fetchall()}
+    
+    # Generate array of past 14 days dates to ensure we have all values
+    from datetime import datetime, timedelta
+    activity = []
+    for i in range(13, -1, -1):
+        day_str = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        activity.append({
+            "date": day_str,
+            "docs": daily_docs.get(day_str, 0),
+            "trends": daily_trends.get(day_str, 0)
+        })
+        
+    # 8. Competitor AI tag stats (Sub-keywords)
+    cursor.execute("SELECT keywords FROM scanned_docs WHERE profile_id = ? AND doc_type = 'competitor'", (profile_id,))
+    tag_counts = {}
+    for row in cursor.fetchall():
+        kws = row["keywords"] or ""
+        for kw in kws.split(","):
+            kw_clean = kw.strip()
+            if kw_clean and kw_clean != "General" and kw_clean != "AI 요약 대기" and kw_clean != "AI 요약 대기 중":
+                tag_counts[kw_clean] = tag_counts.get(kw_clean, 0) + 1
+    
+    sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+    tags_stats = [{"name": name, "value": count} for name, count in sorted_tags[:10]]
+    
+    # 9. Stacked Bar Chart Tag distribution per competitor
+    cursor.execute("""
+        SELECT competitor, keywords 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'competitor'
+    """, (profile_id,))
+    
+    competitor_tags = {}
+    overall_tag_counts = {}
+    for row in cursor.fetchall():
+        comp = row["competitor"]
+        kws = row["keywords"] or ""
+        if comp not in competitor_tags:
+            competitor_tags[comp] = {}
+        for kw in kws.split(","):
+            kw_clean = kw.strip()
+            if kw_clean and kw_clean not in ("General", "AI 요약 대기", "AI 요약 대기 중", "미분류"):
+                competitor_tags[comp][kw_clean] = competitor_tags[comp].get(kw_clean, 0) + 1
+                overall_tag_counts[kw_clean] = overall_tag_counts.get(kw_clean, 0) + 1
+                
+    # Get top 8 tags overall
+    top_tags = [t for t, c in sorted(overall_tag_counts.items(), key=lambda x: x[1], reverse=True)[:8]]
+    comp_names = [c["name"] for c in competitors]
+    
+    datasets = []
+    for tag in top_tags:
+        data_list = []
+        for comp in comp_names:
+            data_list.append(competitor_tags.get(comp, {}).get(tag, 0))
+        datasets.append({
+            "label": tag,
+            "data": data_list
+        })
+        
+    competitor_tag_stats = {
+        "labels": comp_names,
+        "datasets": datasets
+    }
+    
+    # 10. Technical References Latest 3 Posts per blog
+    cursor.execute("""
+        SELECT DISTINCT competitor 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'reference'
+    """, (profile_id,))
+    ref_blogs = [r[0] for r in cursor.fetchall()]
+    
+    latest_references = []
+    for blog in ref_blogs:
+        cursor.execute("""
+            SELECT title, link, COALESCE(NULLIF(published_at, ''), created_at) as date
+            FROM scanned_docs
+            WHERE profile_id = ? AND doc_type = 'reference' AND competitor = ?
+            ORDER BY date DESC LIMIT 3
+        """, (profile_id, blog))
+        posts = [dict(r) for r in cursor.fetchall()]
+        latest_references.append({
+            "blog_name": blog,
+            "posts": posts
+        })
+        
+    # 11. Competitor Latest Releases (3 latest per competitor)
+    cursor.execute("""
+        SELECT DISTINCT competitor 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'competitor'
+    """, (profile_id,))
+    competitors_list = [r[0] for r in cursor.fetchall()]
+    
+    latest_competitor_releases = []
+    for comp in competitors_list:
+        cursor.execute("""
+            SELECT title, link, summary, impact, keywords, COALESCE(NULLIF(published_at, ''), created_at) as date
+            FROM scanned_docs
+            WHERE profile_id = ? AND doc_type = 'competitor' AND competitor = ?
+            ORDER BY date DESC LIMIT 3
+        """, (profile_id, comp))
+        releases = [dict(r) for r in cursor.fetchall()]
+        latest_competitor_releases.append({
+            "competitor_name": comp,
+            "releases": releases
+        })
+        
+    # 11b. Technical Trends Latest News (5 latest)
+    cursor.execute("""
+        SELECT keyword, title, link, summary, source, COALESCE(NULLIF(published_at, ''), created_at) as date
+        FROM scanned_trends
+        WHERE profile_id = ?
+        ORDER BY date DESC LIMIT 5
+    """, (profile_id,))
+    latest_trends = [dict(r) for r in cursor.fetchall()]
+    
+    # Calculate top theme, top keyword, and most active competitor
+    top_theme = f"{tags_stats[0]['name']} ({tags_stats[0]['value']}건)" if tags_stats else "없음"
+    top_keyword = f"{keywords[0]['name']} ({keywords[0]['value']}건)" if keywords else "없음"
+    
+    cursor.execute("""
+        SELECT competitor, COUNT(*) as count 
+        FROM scanned_docs 
+        WHERE profile_id = ? AND doc_type = 'competitor' AND created_at >= datetime('now', '-14 days')
+        GROUP BY competitor 
+        ORDER BY count DESC LIMIT 1
+    """, (profile_id,))
+    row_active = cursor.fetchone()
+    most_active_competitor = f"{row_active['competitor']} ({row_active['count']}건)" if row_active else "없음"
+    
+    conn.close()
+        
+    return {
+        "total_docs": total_docs,
+        "total_references": total_references,
+        "total_trends": total_trends,
+        "total_starred": starred_docs + starred_trends,
+        "competitor_stats": competitors,
+        "reference_stats": references,
+        "keyword_stats": keywords,
+        "activity_stats": activity,
+        "tag_stats": tags_stats,
+        "competitor_tag_stats": competitor_tag_stats,
+        "latest_references": latest_references,
+        "latest_competitor_releases": latest_competitor_releases,
+        "latest_trends": latest_trends,
+        "top_theme": top_theme,
+        "top_keyword": top_keyword,
+        "most_active_competitor": most_active_competitor
+    }
 
 def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool = False, folder: str = "", keyword: str = "", match_mode: str = "any") -> List[Dict[str, Any]]:
     conn = get_db_connection()

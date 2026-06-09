@@ -13,6 +13,9 @@ let currentReportFilter = "all";
 let selectedReportFolders = [];
 let selectedReportKeywords = [];
 let lastRenderedLogText = "";
+let competitorChartInstance = null;
+let keywordChartInstance = null;
+let tagChartInstance = null;
 const FEED_FETCH_LIMIT = 40;
 const FEED_RENDER_LIMIT = 80;
 
@@ -44,71 +47,102 @@ function updateFolderChips(chipsContainer, rowContainer, uniqueFolders, activeFo
 
 function createFeedCard(item, tabType) {
     const card = document.createElement("div");
-    card.className = `feed-card type-${item.type}`;
+    
+    // Determine the type (doc vs reference vs trend)
+    let cardType = item.type; // "doc" or "trend"
+    if (item.type === "doc" && item.doc_type === "reference") {
+        cardType = "reference";
+    }
+    
+    card.className = `feed-card-compact type-${cardType}`;
     const starClass = item.is_starred ? "active" : "";
     const starTitle = tabType === "starred" ? "중요 보관함 해제" : "중요 보관함 저장";
+    
     const publishedDate = getPublishedDate(item);
     const collectedDate = formatDateOnly(item.created_at);
+    const dateText = publishedDate 
+        ? `<strong>발행</strong> ${formatDateOnly(publishedDate)} / <strong>수집</strong> ${collectedDate}`
+        : `<strong>수집</strong> ${collectedDate}`;
+        
     const isAnalysisPending = item.analysis_status === "pending";
-    const analysisBadge = isAnalysisPending ? `<span class="badge badge-pending">AI 요약 대기</span>` : "";
-    const publishedRow = publishedDate
-        ? `<span><strong>발행일</strong>${escapeHtml(formatDateOnly(publishedDate))}</span>`
-        : `<span><strong>발행일</strong>확인 불가</span>`;
-    const dateBlock = `
-        <div class="card-date-block">
-            ${publishedRow}
-            <span><strong>수집일</strong>${escapeHtml(collectedDate)}</span>
-        </div>
-    `;
+    let pendingBadge = "";
+    if (isAnalysisPending) {
+        if (item.retry_count >= 5) {
+            pendingBadge = `<span class="badge badge-pending" style="background: linear-gradient(135deg, var(--color-danger), #dc2626); box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);">AI 요약 실패</span>`;
+        } else {
+            pendingBadge = `<span class="badge badge-pending">AI 요약 대기</span>`;
+        }
+    }
     
-    if (item.type === "doc") {
+    // Header based on cardType
+    let badgeHtml = "";
+    if (cardType === "doc") {
+        badgeHtml = `<span class="badge badge-doc">${escapeHtml(item.competitor)}</span>`;
+    } else if (cardType === "reference") {
+        badgeHtml = `<span class="badge badge-ref-blog">${escapeHtml(item.competitor)}</span>`;
+    } else {
+        badgeHtml = `<span class="badge badge-trend">${escapeHtml(item.keyword)}</span>`;
+    }
+    
+    // Collapsible content: AI summary, impact tags, and links
+    let collapsibleHtml = "";
+    if (cardType === "doc" || cardType === "reference") {
         const kwTags = item.keywords ? item.keywords.split(",").map(k => `<span class="tag">${escapeHtml(k.trim())}</span>`).join("") : "";
-        card.innerHTML = `
-            <div class="card-header">
-                <div class="card-meta">
-                    <span class="badge badge-doc">경쟁사 업데이트</span>
-                    ${analysisBadge}
+        const summaryText = isAnalysisPending 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            : `<p>${escapeHtml(item.summary)}</p>`;
+            
+        collapsibleHtml = `
+            <div class="card-collapsible-details">
+                <h4>${isAnalysisPending ? '원문 요약/설명' : 'AI 요약'}</h4>
+                ${summaryText}
+                ${item.impact && !isAnalysisPending ? `<small><strong>비즈니스 영향도 & 시사점:</strong><br>${escapeHtml(item.impact)}</small>` : ""}
+                <div class="card-collapsible-tags">${kwTags}</div>
+                <div style="margin-top: 8px; text-align: right;">
+                    <a href="${escapeHtml(item.link)}" target="_blank" class="card-link-btn" style="font-size: 11px;">원문 보기 ↗</a>
                 </div>
-                <div class="card-actions">
-                    <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="doc" title="${starTitle}">★</button>
-                </div>
-            </div>
-            <a href="${escapeHtml(item.link)}" target="_blank" class="card-title">${escapeHtml(item.title)}</a>
-            ${dateBlock}
-            <div class="card-impact">
-                <h4>AI 요약</h4>
-                <p>${escapeHtml(item.summary)}</p>
-                ${item.impact ? `<small>${escapeHtml(item.impact)}</small>` : ""}
-            </div>
-            <div class="card-footer">
-                <div class="card-tags">${kwTags}</div>
-                <a href="${escapeHtml(item.link)}" target="_blank" class="card-link-btn">원문 보기 ↗</a>
             </div>
         `;
     } else {
-        card.innerHTML = `
-            <div class="card-header">
-                <div class="card-meta">
-                    <span class="badge badge-trend">기술 트렌드 뉴스</span>
-                    ${analysisBadge}
-                </div>
-                <div class="card-actions">
-                    <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="trend" title="${starTitle}">★</button>
-                </div>
-            </div>
-            <a href="${escapeHtml(item.link)}" target="_blank" class="card-title">${escapeHtml(item.title)}</a>
-            ${dateBlock}
-            <p class="card-summary">${escapeHtml(item.summary)}</p>
-            <div class="card-footer">
-                <div class="card-tags">
+        // Trend
+        const summaryText = isAnalysisPending 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            : `<p>${escapeHtml(item.summary)}</p>`;
+            
+        collapsibleHtml = `
+            <div class="card-collapsible-details">
+                <h4>${isAnalysisPending ? '원문 요약/설명' : 'AI 요약'}</h4>
+                ${summaryText}
+                <div class="card-collapsible-tags">
                     <span class="tag">폴더: ${escapeHtml(item.folder || "미분류")}</span>
                     <span class="tag">키워드: ${escapeHtml(item.keyword)}</span>
                     <span class="tag">출처: ${escapeHtml(item.source)}</span>
                 </div>
-                <a href="${escapeHtml(item.link)}" target="_blank" class="card-link-btn">원문 보기 ↗</a>
+                <div style="margin-top: 8px; text-align: right;">
+                    <a href="${escapeHtml(item.link)}" target="_blank" class="card-link-btn" style="font-size: 11px;">원문 보기 ↗</a>
+                </div>
             </div>
         `;
     }
+    
+    card.innerHTML = `
+        <div class="card-compact-header">
+            <div class="card-compact-meta">
+                ${badgeHtml}
+                ${pendingBadge}
+            </div>
+            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${item.type === 'doc' ? 'doc' : 'trend'}" title="${starTitle}">★</button>
+        </div>
+        <a href="${escapeHtml(item.link)}" target="_blank" class="card-compact-title">${escapeHtml(item.title)}</a>
+        <div class="card-compact-dates">
+            <span>${dateText}</span>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
+            <button class="summary-toggle-btn">📄 AI 요약 보기</button>
+        </div>
+        ${collapsibleHtml}
+    `;
+    
     return card;
 }
 
@@ -191,6 +225,15 @@ const DOM = {
     feedSuggestionsList: document.getElementById("feed-suggestions-list"),
     closeFeedSuggestionsBtn: document.getElementById("close-feed-suggestions-btn"),
     feedRowsContainer: document.getElementById("feed-rows-container"),
+    refNameInput: document.getElementById("ref-name-input"),
+    refUrlInput: document.getElementById("ref-url-input"),
+    addRefRowBtn: document.getElementById("add-ref-row-btn"),
+    suggestRefsBtn: document.getElementById("suggest-refs-btn"),
+    refSuggestionsPanel: document.getElementById("ref-suggestions-panel"),
+    refSuggestionsStatus: document.getElementById("ref-suggestions-status"),
+    refSuggestionsList: document.getElementById("ref-suggestions-list"),
+    closeRefSuggestionsBtn: document.getElementById("close-ref-suggestions-btn"),
+    refRowsContainer: document.getElementById("ref-rows-container"),
     saveSettingsBtn: document.getElementById("save-settings-btn"),
     deleteProfileBtn: document.getElementById("delete-profile-btn"),
     overviewProfileName: document.getElementById("overview-profile-name"),
@@ -237,6 +280,13 @@ const DOM = {
     downloadMdBtn: document.getElementById("download-md-btn"),
     downloadPdfBtn: document.getElementById("download-pdf-btn"),
     reportViewerContent: document.getElementById("report-viewer-content"),
+    
+    // Stats Elements
+    statTopTheme: document.getElementById("stat-top-theme"),
+    statMostActiveCompetitor: document.getElementById("stat-most-active-competitor"),
+    statTopKeyword: document.getElementById("stat-top-keyword"),
+    statStarredSignals: document.getElementById("stat-starred-signals"),
+    retrySummaryBtn: document.getElementById("retry-summary-btn"),
 };
 
 // --- Initialization ---
@@ -284,6 +334,8 @@ function setupTabNavigation() {
                 loadReports();
             } else if (tabId === "board") {
                 loadBoardPosts();
+            } else if (tabId === "dashboard-competitor" || tabId === "dashboard-trend") {
+                loadDashboardStats();
             }
         });
     });
@@ -400,17 +452,37 @@ function setupEventListeners() {
             DOM.feedSuggestionsPanel.style.display = "none";
         });
     }
+    if (DOM.suggestRefsBtn) {
+        DOM.suggestRefsBtn.addEventListener("click", handleSuggestRefs);
+    }
+    if (DOM.closeRefSuggestionsBtn) {
+        DOM.closeRefSuggestionsBtn.addEventListener("click", () => {
+            DOM.refSuggestionsPanel.style.display = "none";
+        });
+    }
     
     // Feeds Actions
     DOM.addFeedRowBtn.addEventListener("click", () => {
         const name = DOM.feedNameInput.value.trim();
         const url = DOM.feedUrlInput.value.trim();
         if (name && url) {
-            addFeedRow(name, url);
+            addFeedRow(name, url, "competitor");
             DOM.feedNameInput.value = "";
             DOM.feedUrlInput.value = "";
         }
     });
+    
+    if (DOM.addRefRowBtn) {
+        DOM.addRefRowBtn.addEventListener("click", () => {
+            const name = DOM.refNameInput.value.trim();
+            const url = DOM.refUrlInput.value.trim();
+            if (name && url) {
+                addFeedRow(name, url, "reference");
+                DOM.refNameInput.value = "";
+                DOM.refUrlInput.value = "";
+            }
+        });
+    }
     
     // Password Visibility
     DOM.toggleApiKeyBtn.addEventListener("click", () => {
@@ -486,6 +558,9 @@ function setupEventListeners() {
     
     // Log controls
     DOM.startScanBtn.addEventListener("click", () => triggerBackgroundRun("/api/scan"));
+    if (DOM.retrySummaryBtn) {
+        DOM.retrySummaryBtn.addEventListener("click", () => triggerBackgroundRun("/api/scan/retry"));
+    }
     DOM.startReportBtn.addEventListener("click", () => triggerBackgroundRun(`/api/report/generate?profile_id=${currentProfileId}&report_type=monthly`));
     DOM.stopProcessBtn.addEventListener("click", stopBackgroundRun);
     DOM.clearLogsBtn.addEventListener("click", () => DOM.terminalOutputBody.innerHTML = "");
@@ -511,6 +586,47 @@ function setupEventListeners() {
         if (!currentActiveReport) return;
         exportReportToPdf(currentActiveReport.title);
     });
+
+    // Toggle accordion summary details for compact cards
+    if (DOM.feedItemsGrid) {
+        DOM.feedItemsGrid.addEventListener("click", (e) => {
+            const btn = e.target.closest(".summary-toggle-btn");
+            if (btn) {
+                const card = btn.closest(".feed-card-compact");
+                const details = card.querySelector(".card-collapsible-details");
+                if (details) {
+                    const isOpen = details.style.display === "flex" || details.style.display === "block";
+                    if (isOpen) {
+                        details.style.display = "none";
+                        btn.textContent = "📄 AI 요약 보기";
+                    } else {
+                        details.style.display = "block";
+                        btn.textContent = "📄 요약 접기";
+                    }
+                }
+            }
+        });
+    }
+
+    if (DOM.starredItemsGrid) {
+        DOM.starredItemsGrid.addEventListener("click", (e) => {
+            const btn = e.target.closest(".summary-toggle-btn");
+            if (btn) {
+                const card = btn.closest(".feed-card-compact");
+                const details = card.querySelector(".card-collapsible-details");
+                if (details) {
+                    const isOpen = details.style.display === "flex" || details.style.display === "block";
+                    if (isOpen) {
+                        details.style.display = "none";
+                        btn.textContent = "📄 AI 요약 보기";
+                    } else {
+                        details.style.display = "block";
+                        btn.textContent = "📄 요약 접기";
+                    }
+                }
+            }
+        });
+    }
 }
 
 // --- Auth Manager ---
@@ -579,6 +695,16 @@ function updateAdminControls() {
             DOM.suggestFeedsBtn.classList.remove("disabled");
             DOM.suggestFeedsBtn.removeAttribute("disabled");
         }
+        if (DOM.refNameInput) DOM.refNameInput.removeAttribute("disabled");
+        if (DOM.refUrlInput) DOM.refUrlInput.removeAttribute("disabled");
+        if (DOM.addRefRowBtn) {
+            DOM.addRefRowBtn.classList.remove("disabled");
+            DOM.addRefRowBtn.removeAttribute("disabled");
+        }
+        if (DOM.suggestRefsBtn) {
+            DOM.suggestRefsBtn.classList.remove("disabled");
+            DOM.suggestRefsBtn.removeAttribute("disabled");
+        }
         DOM.saveSettingsBtn.classList.remove("disabled");
         DOM.saveSettingsBtn.removeAttribute("disabled");
         DOM.deleteProfileBtn.classList.remove("disabled");
@@ -614,9 +740,18 @@ function updateAdminControls() {
             DOM.suggestFeedsBtn.classList.remove("disabled");
             DOM.suggestFeedsBtn.removeAttribute("disabled");
         }
-        
         DOM.addFeedRowBtn.classList.remove("disabled");
         DOM.addFeedRowBtn.removeAttribute("disabled");
+        if (DOM.refNameInput) DOM.refNameInput.removeAttribute("disabled");
+        if (DOM.refUrlInput) DOM.refUrlInput.removeAttribute("disabled");
+        if (DOM.suggestRefsBtn) {
+            DOM.suggestRefsBtn.classList.remove("disabled");
+            DOM.suggestRefsBtn.removeAttribute("disabled");
+        }
+        if (DOM.addRefRowBtn) {
+            DOM.addRefRowBtn.classList.remove("disabled");
+            DOM.addRefRowBtn.removeAttribute("disabled");
+        }
         
         DOM.saveSettingsBtn.classList.remove("disabled");
         DOM.saveSettingsBtn.removeAttribute("disabled");
@@ -711,8 +846,9 @@ function onProfileChanged() {
     profile.keywords.forEach(kw => addKeywordTagElement(kw));
     
     // Feeds rows rendering
-    DOM.feedRowsContainer.innerHTML = "";
-    profile.feeds.forEach(f => addFeedRowElement(f.name, f.feed_url));
+    if (DOM.feedRowsContainer) DOM.feedRowsContainer.innerHTML = "";
+    if (DOM.refRowsContainer) DOM.refRowsContainer.innerHTML = "";
+    profile.feeds.forEach(f => addFeedRowElement(f.name, f.feed_url, f.feed_type));
     updateSettingsOverview(profile);
     updateAdminControls();
     
@@ -724,6 +860,8 @@ function onProfileChanged() {
         loadStarredFeeds();
     } else if (activeTab === "reports") {
         loadReports();
+    } else if (activeTab === "dashboard") {
+        loadDashboardStats();
     }
 }
 
@@ -1104,7 +1242,8 @@ async function handleSuggestFeeds() {
                 profile_id: currentProfileId,
                 seed_topic: seedTopic,
                 keywords,
-                feeds
+                feeds,
+                feed_type: "competitor"
             })
         });
         
@@ -1174,6 +1313,99 @@ function renderFeedSuggestions(data) {
     });
 }
 
+async function handleSuggestRefs() {
+    if (!currentProfileId || !DOM.refSuggestionsPanel) return;
+    const seedTopic = [DOM.refNameInput.value.trim(), DOM.refUrlInput.value.trim()]
+        .filter(Boolean)
+        .join(" ");
+    const keywords = getCurrentKeywordPayload();
+    const feeds = getCurrentFeedPayload();
+    
+    DOM.refSuggestionsPanel.style.display = "block";
+    DOM.refSuggestionsStatus.textContent = "AI가 유용한 기술 블로그/레퍼런스 RSS 후보를 찾고, URL 접속 검증을 진행 중입니다...";
+    DOM.refSuggestionsList.innerHTML = "";
+    DOM.suggestRefsBtn.setAttribute("disabled", "true");
+    DOM.suggestRefsBtn.classList.add("disabled");
+    
+    try {
+        const res = await fetch("/api/feeds/suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                seed_topic: seedTopic,
+                keywords,
+                feeds,
+                feed_type: "reference"
+            })
+        });
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "추천 블로그를 가져오지 못했습니다.");
+        }
+        
+        const data = await res.json();
+        renderRefSuggestions(data);
+    } catch (e) {
+        DOM.refSuggestionsStatus.textContent = `추천 실패: ${e.message}`;
+    } finally {
+        DOM.suggestRefsBtn.removeAttribute("disabled");
+        DOM.suggestRefsBtn.classList.remove("disabled");
+    }
+}
+
+function renderRefSuggestions(data) {
+    const suggestions = data.suggestions || [];
+    const verified = suggestions.filter(item => item.validation && item.validation.status === "verified");
+    
+    DOM.refSuggestionsStatus.textContent = suggestions.length
+        ? `총 ${suggestions.length}개 후보 중 ${verified.length}개 URL이 검증되었습니다. 검증된 항목만 바로 추가할 수 있습니다.`
+        : "추천할 새 기술 블로그 후보가 많지 않습니다. 관련 키워드를 조금 더 세분화해보세요.";
+    
+    DOM.refSuggestionsList.innerHTML = suggestions.length ? `
+        <div class="suggestions-bulk-actions feed-bulk-actions">
+            <button type="button" class="feed-bulk-add-btn" id="add-all-verified-refs-btn" ${verified.length ? "" : "disabled"}>검증된 항목 일괄 추가</button>
+            <span>검증 완료 ${verified.length}개</span>
+        </div>
+        ${suggestions.map((item, idx) => renderFeedSuggestionCard(item, idx)).join("")}
+    ` : "";
+
+    const addAllBtn = document.getElementById("add-all-verified-refs-btn");
+    if (addAllBtn) {
+        addAllBtn.addEventListener("click", () => {
+            let addedCount = 0;
+            suggestions.forEach(item => {
+                if (item.validation && item.validation.status === "verified" && addSuggestedFeed(item)) {
+                    addedCount += 1;
+                }
+            });
+            DOM.refSuggestionsList.querySelectorAll(".add-suggested-feed").forEach(btn => {
+                btn.textContent = "처리됨";
+                btn.setAttribute("disabled", "true");
+            });
+            addAllBtn.textContent = addedCount ? `${addedCount}개 추가됨` : "이미 모두 추가됨";
+            addAllBtn.setAttribute("disabled", "true");
+            DOM.refSuggestionsStatus.textContent = `${addedCount}개 기술 블로그를 추가했습니다. 프로필 설정 저장을 눌러 DB에 반영하세요.`;
+        });
+    }
+    
+    DOM.refSuggestionsList.querySelectorAll(".add-suggested-feed").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const item = suggestions[Number(btn.dataset.index)];
+            if (!item) return;
+            if (addSuggestedFeed(item)) {
+                btn.textContent = "추가됨";
+                btn.setAttribute("disabled", "true");
+                DOM.refSuggestionsStatus.textContent = "기술 블로그를 추가했습니다. 프로필 설정 저장을 눌러 DB에 반영하세요.";
+            } else {
+                btn.textContent = "이미 있음";
+                btn.setAttribute("disabled", "true");
+            }
+        });
+    });
+}
+
 function renderFeedSuggestionCard(item, idx) {
     const validation = item.validation || {};
     const status = validation.status || "warning";
@@ -1205,7 +1437,7 @@ function addSuggestedFeed(item) {
     const normalizedUrl = String(item.url).trim().replace(/\/$/, "").toLowerCase();
     const existing = getCurrentFeedPayload().map(feed => String(feed.feed_url).trim().replace(/\/$/, "").toLowerCase());
     if (existing.includes(normalizedUrl)) return false;
-    addFeedRow(item.name, item.url);
+    addFeedRow(item.name, item.url, item.feed_type || 'competitor');
     return true;
 }
 
@@ -1218,8 +1450,9 @@ function removeKeywordTagAndEmptyGroup(tag) {
     }
 }
 
-function addFeedRowElement(name, url) {
+function addFeedRowElement(name, url, feed_type = 'competitor') {
     const row = document.createElement("tr");
+    row.setAttribute("data-feed-type", feed_type);
     row.innerHTML = `
         <td>${escapeHtml(name)}</td>
         <td><a href="${escapeHtml(url)}" target="_blank" class="card-link-btn">${escapeHtml(url)}</a></td>
@@ -1232,12 +1465,16 @@ function addFeedRowElement(name, url) {
         row.remove();
     });
     
-    DOM.feedRowsContainer.appendChild(row);
+    if (feed_type === 'reference') {
+        if (DOM.refRowsContainer) DOM.refRowsContainer.appendChild(row);
+    } else {
+        if (DOM.feedRowsContainer) DOM.feedRowsContainer.appendChild(row);
+    }
 }
 
-function addFeedRow(name, url) {
+function addFeedRow(name, url, feed_type) {
     if (!name || !url) return;
-    addFeedRowElement(name, url);
+    addFeedRowElement(name, url, feed_type);
 }
 
 async function handleSaveSettings() {
@@ -1258,16 +1495,38 @@ async function handleSaveSettings() {
                           
     // Extract feeds
     const feeds = [];
-    const rows = DOM.feedRowsContainer.querySelectorAll("tr");
-    rows.forEach(row => {
-        const cols = row.querySelectorAll("td");
-        if (cols.length >= 2) {
-            feeds.push({
-                name: cols[0].textContent.trim(),
-                feed_url: cols[1].textContent.trim()
-            });
-        }
-    });
+    
+    // 1. Competitor feeds
+    if (DOM.feedRowsContainer) {
+        const rows = DOM.feedRowsContainer.querySelectorAll("tr");
+        rows.forEach(row => {
+            const cols = row.querySelectorAll("td");
+            if (cols.length >= 2) {
+                const feedType = row.getAttribute("data-feed-type") || "competitor";
+                feeds.push({
+                    name: cols[0].textContent.trim(),
+                    feed_url: cols[1].textContent.trim(),
+                    feed_type: feedType
+                });
+            }
+        });
+    }
+    
+    // 2. Reference feeds
+    if (DOM.refRowsContainer) {
+        const rows = DOM.refRowsContainer.querySelectorAll("tr");
+        rows.forEach(row => {
+            const cols = row.querySelectorAll("td");
+            if (cols.length >= 2) {
+                const feedType = row.getAttribute("data-feed-type") || "reference";
+                feeds.push({
+                    name: cols[0].textContent.trim(),
+                    feed_url: cols[1].textContent.trim(),
+                    feed_type: feedType
+                });
+            }
+        });
+    }
     
     const payload = {
         name,
@@ -1329,8 +1588,14 @@ async function loadFeeds() {
         
         let queryParams = `profile_id=${currentProfileId}&search=${encodeURIComponent(search)}&limit=${FEED_FETCH_LIMIT}`;
         
-        if (activeFilter === "all" || activeFilter === "docs") {
-            const res = await fetch(`/api/docs?${queryParams}`);
+        if (activeFilter === "all" || activeFilter === "docs" || activeFilter === "references") {
+            let docQueryParams = queryParams;
+            if (activeFilter === "docs") {
+                docQueryParams += `&doc_type=competitor`;
+            } else if (activeFilter === "references") {
+                docQueryParams += `&doc_type=reference`;
+            }
+            const res = await fetch(`/api/docs?${docQueryParams}`);
             docs = await res.json();
         }
         
@@ -1344,7 +1609,7 @@ async function loadFeeds() {
             }
         }
         
-        // Merge & sort feeds by source publish date first, then collection date.
+        // Merge & sort feeds
         let items = [];
         docs.forEach(d => items.push({ ...d, type: 'doc' }));
         trends.forEach(t => items.push({ ...t, type: 'trend' }));
@@ -1352,30 +1617,66 @@ async function loadFeeds() {
         items.sort((a, b) => getFeedSortTime(b) - getFeedSortTime(a));
         items = items.slice(0, FEED_RENDER_LIMIT);
         
-        // Render
-        DOM.feedItemsGrid.innerHTML = "";
+        // Clear all column containers
+        const colComp = document.getElementById("feed-items-competitor");
+        const colRef = document.getElementById("feed-items-reference");
+        const colTrend = document.getElementById("feed-items-trend");
+        if (colComp) colComp.innerHTML = "";
+        if (colRef) colRef.innerHTML = "";
+        if (colTrend) colTrend.innerHTML = "";
         
         if (items.length === 0) {
             DOM.feedEmpty.style.display = "block";
+            
+            // Clear counts
+            const badgeComp = document.getElementById("feed-count-competitor");
+            const badgeRef = document.getElementById("feed-count-reference");
+            const badgeTrend = document.getElementById("feed-count-trend");
+            if (badgeComp) badgeComp.textContent = 0;
+            if (badgeRef) badgeRef.textContent = 0;
+            if (badgeTrend) badgeTrend.textContent = 0;
             return;
         }
         
         DOM.feedEmpty.style.display = "none";
         
+        let compCount = 0;
+        let refCount = 0;
+        let trendCount = 0;
+        
         const groupByFolder = activeFilter === "trends" && DOM.feedGroupByFolder && DOM.feedGroupByFolder.checked;
         
         if (groupByFolder) {
-            // Group items by folder
+            // Group trend items by folder
             const groups = {};
             items.forEach(item => {
-                const folder = item.folder || "미분류";
-                if (!groups[folder]) {
-                    groups[folder] = [];
+                let cardType = item.type;
+                if (item.type === "doc" && item.doc_type === "reference") {
+                    cardType = "reference";
                 }
-                groups[folder].push(item);
+                
+                if (cardType === "trend") {
+                    const folder = item.folder || "미분류";
+                    if (!groups[folder]) {
+                        groups[folder] = [];
+                    }
+                    groups[folder].push(item);
+                    trendCount++;
+                } else if (cardType === "doc") {
+                    if (colComp) {
+                        const card = createFeedCard(item, "feed");
+                        colComp.appendChild(card);
+                        compCount++;
+                    }
+                } else if (cardType === "reference") {
+                    if (colRef) {
+                        const card = createFeedCard(item, "feed");
+                        colRef.appendChild(card);
+                        refCount++;
+                    }
+                }
             });
             
-            // Sort folder names alphabetically, but put "미분류" at the very end
             const folderNames = Object.keys(groups).sort((a, b) => {
                 if (a === "미분류") return 1;
                 if (b === "미분류") return -1;
@@ -1385,7 +1686,6 @@ async function loadFeeds() {
             folderNames.forEach(folderName => {
                 const groupItems = groups[folderName];
                 
-                // Render folder header
                 const header = document.createElement("div");
                 header.className = "feed-group-section-header";
                 header.innerHTML = `
@@ -1393,20 +1693,75 @@ async function loadFeeds() {
                     <span>${escapeHtml(folderName)}</span>
                     <span class="folder-count">(${groupItems.length})</span>
                 `;
-                DOM.feedItemsGrid.appendChild(header);
+                if (colTrend) colTrend.appendChild(header);
                 
-                // Render items inside the folder group
                 groupItems.forEach(item => {
                     const card = createFeedCard(item, "feed");
-                    DOM.feedItemsGrid.appendChild(card);
+                    if (colTrend) colTrend.appendChild(card);
                 });
             });
         } else {
-            // Normal flat chronological rendering
+            // Normal 3-column chronological distribution
             items.forEach(item => {
                 const card = createFeedCard(item, "feed");
-                DOM.feedItemsGrid.appendChild(card);
+                
+                let cardType = item.type;
+                if (item.type === "doc" && item.doc_type === "reference") {
+                    cardType = "reference";
+                }
+                
+                if (cardType === "doc") {
+                    if (colComp) {
+                        colComp.appendChild(card);
+                        compCount++;
+                    }
+                } else if (cardType === "reference") {
+                    if (colRef) {
+                        colRef.appendChild(card);
+                        refCount++;
+                    }
+                } else {
+                    if (colTrend) {
+                        colTrend.appendChild(card);
+                        trendCount++;
+                    }
+                }
             });
+        }
+        
+        // Update count badges
+        const badgeComp = document.getElementById("feed-count-competitor");
+        const badgeRef = document.getElementById("feed-count-reference");
+        const badgeTrend = document.getElementById("feed-count-trend");
+        if (badgeComp) badgeComp.textContent = compCount;
+        if (badgeRef) badgeRef.textContent = refCount;
+        if (badgeTrend) badgeTrend.textContent = trendCount;
+        
+        // Apply hidden/expanded classes on column wrappers based on activeFilter
+        const wrapComp = document.getElementById("feed-col-competitor");
+        const wrapRef = document.getElementById("feed-col-reference");
+        const wrapTrend = document.getElementById("feed-col-trend");
+        
+        if (wrapComp && wrapRef && wrapTrend) {
+            wrapComp.className = "feed-column";
+            wrapRef.className = "feed-column";
+            wrapTrend.className = "feed-column";
+            
+            if (activeFilter === "all") {
+                // Keep default 3-column layout
+            } else if (activeFilter === "docs") {
+                wrapComp.classList.add("expanded-col");
+                wrapRef.classList.add("hidden-col");
+                wrapTrend.classList.add("hidden-col");
+            } else if (activeFilter === "references") {
+                wrapRef.classList.add("expanded-col");
+                wrapComp.classList.add("hidden-col");
+                wrapTrend.classList.add("hidden-col");
+            } else if (activeFilter === "trends") {
+                wrapTrend.classList.add("expanded-col");
+                wrapComp.classList.add("hidden-col");
+                wrapRef.classList.add("hidden-col");
+            }
         }
  
         // Bind star toggle handlers
@@ -1467,8 +1822,14 @@ async function loadStarredFeeds() {
         
         let queryParams = `profile_id=${currentProfileId}&search=${encodeURIComponent(search)}&starred_only=true`;
         
-        if (activeFilter === "all" || activeFilter === "docs") {
-            const res = await fetch(`/api/docs?${queryParams}`);
+        if (activeFilter === "all" || activeFilter === "docs" || activeFilter === "references") {
+            let docQueryParams = queryParams;
+            if (activeFilter === "docs") {
+                docQueryParams += `&doc_type=competitor`;
+            } else if (activeFilter === "references") {
+                docQueryParams += `&doc_type=reference`;
+            }
+            const res = await fetch(`/api/docs?${docQueryParams}`);
             docs = await res.json();
         }
         
@@ -1482,36 +1843,73 @@ async function loadStarredFeeds() {
             }
         }
         
-        // Merge & sort feeds by source publish date first, then collection date.
+        // Merge & sort feeds
         let items = [];
         docs.forEach(d => items.push({ ...d, type: 'doc' }));
         trends.forEach(t => items.push({ ...t, type: 'trend' }));
         
         items.sort((a, b) => getFeedSortTime(b) - getFeedSortTime(a));
         
-        DOM.starredItemsGrid.innerHTML = "";
+        // Clear all column containers
+        const colComp = document.getElementById("starred-items-competitor");
+        const colRef = document.getElementById("starred-items-reference");
+        const colTrend = document.getElementById("starred-items-trend");
+        if (colComp) colComp.innerHTML = "";
+        if (colRef) colRef.innerHTML = "";
+        if (colTrend) colTrend.innerHTML = "";
         
         if (items.length === 0) {
             DOM.starredEmpty.style.display = "block";
+            
+            // Clear counts
+            const badgeComp = document.getElementById("starred-count-competitor");
+            const badgeRef = document.getElementById("starred-count-reference");
+            const badgeTrend = document.getElementById("starred-count-trend");
+            if (badgeComp) badgeComp.textContent = 0;
+            if (badgeRef) badgeRef.textContent = 0;
+            if (badgeTrend) badgeTrend.textContent = 0;
             return;
         }
         
         DOM.starredEmpty.style.display = "none";
         
+        let compCount = 0;
+        let refCount = 0;
+        let trendCount = 0;
+        
         const groupByFolder = activeFilter === "trends" && DOM.starredGroupByFolder && DOM.starredGroupByFolder.checked;
         
         if (groupByFolder) {
-            // Group items by folder
+            // Group trend items by folder
             const groups = {};
             items.forEach(item => {
-                const folder = item.folder || "미분류";
-                if (!groups[folder]) {
-                    groups[folder] = [];
+                let cardType = item.type;
+                if (item.type === "doc" && item.doc_type === "reference") {
+                    cardType = "reference";
                 }
-                groups[folder].push(item);
+                
+                if (cardType === "trend") {
+                    const folder = item.folder || "미분류";
+                    if (!groups[folder]) {
+                        groups[folder] = [];
+                    }
+                    groups[folder].push(item);
+                    trendCount++;
+                } else if (cardType === "doc") {
+                    if (colComp) {
+                        const card = createFeedCard(item, "starred");
+                        colComp.appendChild(card);
+                        compCount++;
+                    }
+                } else if (cardType === "reference") {
+                    if (colRef) {
+                        const card = createFeedCard(item, "starred");
+                        colRef.appendChild(card);
+                        refCount++;
+                    }
+                }
             });
             
-            // Sort folder names alphabetically, but put "미분류" at the very end
             const folderNames = Object.keys(groups).sort((a, b) => {
                 if (a === "미분류") return 1;
                 if (b === "미분류") return -1;
@@ -1521,7 +1919,6 @@ async function loadStarredFeeds() {
             folderNames.forEach(folderName => {
                 const groupItems = groups[folderName];
                 
-                // Render folder header
                 const header = document.createElement("div");
                 header.className = "feed-group-section-header";
                 header.innerHTML = `
@@ -1529,22 +1926,77 @@ async function loadStarredFeeds() {
                     <span>${escapeHtml(folderName)}</span>
                     <span class="folder-count">(${groupItems.length})</span>
                 `;
-                DOM.starredItemsGrid.appendChild(header);
+                if (colTrend) colTrend.appendChild(header);
                 
-                // Render items inside the folder group
                 groupItems.forEach(item => {
                     const card = createFeedCard(item, "starred");
-                    DOM.starredItemsGrid.appendChild(card);
+                    if (colTrend) colTrend.appendChild(card);
                 });
             });
         } else {
-            // Normal flat chronological rendering
+            // Normal 3-column chronological distribution
             items.forEach(item => {
                 const card = createFeedCard(item, "starred");
-                DOM.starredItemsGrid.appendChild(card);
+                
+                let cardType = item.type;
+                if (item.type === "doc" && item.doc_type === "reference") {
+                    cardType = "reference";
+                }
+                
+                if (cardType === "doc") {
+                    if (colComp) {
+                        colComp.appendChild(card);
+                        compCount++;
+                    }
+                } else if (cardType === "reference") {
+                    if (colRef) {
+                        colRef.appendChild(card);
+                        refCount++;
+                    }
+                } else {
+                    if (colTrend) {
+                        colTrend.appendChild(card);
+                        trendCount++;
+                    }
+                }
             });
         }
- 
+        
+        // Update count badges
+        const badgeComp = document.getElementById("starred-count-competitor");
+        const badgeRef = document.getElementById("starred-count-reference");
+        const badgeTrend = document.getElementById("starred-count-trend");
+        if (badgeComp) badgeComp.textContent = compCount;
+        if (badgeRef) badgeRef.textContent = refCount;
+        if (badgeTrend) badgeTrend.textContent = trendCount;
+        
+        // Apply hidden/expanded classes on column wrappers based on activeFilter
+        const wrapComp = document.getElementById("starred-col-competitor");
+        const wrapRef = document.getElementById("starred-col-reference");
+        const wrapTrend = document.getElementById("starred-col-trend");
+        
+        if (wrapComp && wrapRef && wrapTrend) {
+            wrapComp.className = "feed-column";
+            wrapRef.className = "feed-column";
+            wrapTrend.className = "feed-column";
+            
+            if (activeFilter === "all") {
+                // Keep default 3-column layout
+            } else if (activeFilter === "docs") {
+                wrapComp.classList.add("expanded-col");
+                wrapRef.classList.add("hidden-col");
+                wrapTrend.classList.add("hidden-col");
+            } else if (activeFilter === "references") {
+                wrapRef.classList.add("expanded-col");
+                wrapComp.classList.add("hidden-col");
+                wrapTrend.classList.add("hidden-col");
+            } else if (activeFilter === "trends") {
+                wrapTrend.classList.add("expanded-col");
+                wrapComp.classList.add("hidden-col");
+                wrapRef.classList.add("hidden-col");
+            }
+        }
+  
         // Bind star toggle handlers for starred tab
         const starBtns = DOM.starredItemsGrid.querySelectorAll(".feed-star-btn");
         starBtns.forEach(btn => {
@@ -1579,7 +2031,7 @@ async function loadStarredFeeds() {
 async function handleCompileStarredReport() {
     if (!currentProfileId) return;
     
-    const starredCards = DOM.starredItemsGrid.querySelectorAll(".feed-card");
+    const starredCards = DOM.starredItemsGrid.querySelectorAll(".feed-card-compact");
     if (starredCards.length === 0) {
         alert("중요 보관함에 최소 1개 이상의 아이템이 있어야 보고서를 생성할 수 있습니다.");
         return;
@@ -1830,6 +2282,10 @@ async function pollLogsLoop() {
                 DOM.startScanBtn.classList.add("disabled");
                 DOM.startReportBtn.setAttribute("disabled", "true");
                 DOM.startReportBtn.classList.add("disabled");
+                if (DOM.retrySummaryBtn) {
+                    DOM.retrySummaryBtn.setAttribute("disabled", "true");
+                    DOM.retrySummaryBtn.classList.add("disabled");
+                }
                 DOM.stopProcessBtn.removeAttribute("disabled");
                 DOM.stopProcessBtn.classList.remove("disabled");
             } else {
@@ -1839,6 +2295,10 @@ async function pollLogsLoop() {
                 DOM.startScanBtn.classList.remove("disabled");
                 DOM.startReportBtn.removeAttribute("disabled");
                 DOM.startReportBtn.classList.remove("disabled");
+                if (DOM.retrySummaryBtn) {
+                    DOM.retrySummaryBtn.removeAttribute("disabled");
+                    DOM.retrySummaryBtn.classList.remove("disabled");
+                }
                 DOM.stopProcessBtn.setAttribute("disabled", "true");
                 DOM.stopProcessBtn.classList.add("disabled");
             }
@@ -2289,4 +2749,486 @@ function exportReportToPdf(title) {
     
     // Generate PDF
     html2pdf().from(container).set(opt).save();
+}
+
+// --- Dashboard Charts Logic ---
+async function loadDashboardStats() {
+    if (!currentProfileId) return;
+
+    try {
+        const res = await fetch(`/api/stats?profile_id=${currentProfileId}`);
+        if (!res.ok) throw new Error("Failed to fetch statistics");
+        const stats = await res.json();
+
+        // 1. Update stats numbers in cards
+        if (DOM.statTopTheme) DOM.statTopTheme.textContent = stats.top_theme || "-";
+        if (DOM.statMostActiveCompetitor) DOM.statMostActiveCompetitor.textContent = stats.most_active_competitor || "-";
+        if (DOM.statTopKeyword) DOM.statTopKeyword.textContent = stats.top_keyword || "-";
+        if (DOM.statStarredSignals) DOM.statStarredSignals.textContent = stats.total_starred ? `${stats.total_starred}건 검증됨` : "0건 검증됨";
+
+        // 2. Competitor Chart (Stacked Bar Chart)
+        renderCompetitorChart(stats.competitor_tag_stats);
+
+        // 2b. Reference Latest Updates Widget
+        renderReferenceLatestWidget(stats.latest_references);
+
+        // 3. Keyword Chart (Doughnut/Pie Chart)
+        renderKeywordChart(stats.keyword_stats);
+
+        // 4. Competitor Tags Chart (Horizontal Bar Chart)
+        renderTagChart(stats.tag_stats);
+
+        // 5. Competitor Grouped Releases Widget
+        renderCompetitorLatestWidget(stats.latest_competitor_releases);
+
+        // 5b. Technical Trends Latest News Widget
+        renderTrendLatestWidget(stats.latest_trends);
+
+    } catch (e) {
+        console.error("Error loading dashboard stats:", e);
+    }
+}
+
+function renderCompetitorChart(data) {
+    const canvas = document.getElementById("competitorChart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    
+    // Destroy previous instance to avoid memory leak or overlay
+    if (competitorChartInstance) {
+        competitorChartInstance.destroy();
+    }
+
+    if (!data || !data.labels || data.labels.length === 0) {
+        drawEmptyChartState(ctx, "데이터 없음");
+        return;
+    }
+
+    const colors = [
+        "#007acc", "#00f2fe", "#a855f7", "#10b981", "#ef4444", 
+        "#f59e0b", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899"
+    ];
+
+    const datasets = data.datasets.map((ds, index) => {
+        const color = colors[index % colors.length];
+        return {
+            label: ds.label,
+            data: ds.data,
+            backgroundColor: color + "99",
+            borderColor: color,
+            borderWidth: 1.5,
+            borderRadius: 4
+        };
+    });
+
+    competitorChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { color: '#9ca3af', font: { size: 10 }, boxWidth: 10 }
+                },
+                tooltip: {
+                    backgroundColor: '#121926',
+                    titleColor: '#f3f4f6',
+                    bodyColor: '#f3f4f6',
+                    borderColor: 'rgba(255, 255, 255, 0.08)',
+                    borderWidth: 1,
+                    mode: 'index',
+                    intersect: false
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    ticks: { color: '#9ca3af', font: { size: 11 } }
+                },
+                y: {
+                    stacked: true,
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    ticks: { color: '#9ca3af', font: { size: 11 }, precision: 0 },
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+
+function renderReferenceLatestWidget(data) {
+    const container = document.getElementById("reference-latest-widget");
+    if (!container) return;
+    
+    container.innerHTML = "";
+    
+    if (!data || data.length === 0) {
+        container.innerHTML = `<div class="empty-state-small" style="padding: 24px; text-align: center; color: var(--text-help); font-size: 13px;">수집된 기술 레퍼런스 데이터가 없습니다.</div>`;
+        return;
+    }
+    
+    data.forEach(group => {
+        const blogGroup = document.createElement("div");
+        blogGroup.className = "ref-blog-group";
+        
+        const header = document.createElement("div");
+        header.className = "ref-blog-header";
+        header.textContent = group.blog_name;
+        blogGroup.appendChild(header);
+        
+        const postList = document.createElement("ul");
+        postList.className = "ref-post-list";
+        
+        if (!group.posts || group.posts.length === 0) {
+            const emptyItem = document.createElement("li");
+            emptyItem.style.color = "var(--text-help)";
+            emptyItem.style.fontSize = "11px";
+            emptyItem.textContent = "최근 게시물이 없습니다.";
+            postList.appendChild(emptyItem);
+        } else {
+            group.posts.forEach(post => {
+                const item = document.createElement("li");
+                item.className = "ref-post-item";
+                
+                const link = document.createElement("a");
+                link.className = "ref-post-link";
+                link.href = post.link;
+                link.target = "_blank";
+                link.textContent = post.title;
+                link.title = post.title;
+                
+                const meta = document.createElement("div");
+                meta.className = "ref-post-meta";
+                
+                const dateVal = post.date ? formatDateOnly(post.date) : "날짜 미상";
+                meta.innerHTML = `<span>📅 ${escapeHtml(dateVal)}</span><span>↗</span>`;
+                
+                item.appendChild(link);
+                item.appendChild(meta);
+                postList.appendChild(item);
+            });
+        }
+        
+        blogGroup.appendChild(postList);
+        container.appendChild(blogGroup);
+    });
+}
+
+function renderKeywordChart(data) {
+    const canvas = document.getElementById("keywordChart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    if (keywordChartInstance) {
+        keywordChartInstance.destroy();
+    }
+
+    if (!data || data.length === 0) {
+        drawEmptyChartState(ctx, "데이터 없음");
+        return;
+    }
+
+    let chartData = [...data];
+    if (chartData.length > 8) {
+        const top = chartData.slice(0, 7);
+        const remainingSum = chartData.slice(7).reduce((acc, curr) => acc + curr.value, 0);
+        top.push({ name: "기타", value: remainingSum });
+        chartData = top;
+    }
+
+    const labels = chartData.map(item => item.name);
+    const values = chartData.map(item => item.value);
+
+    const colors = [
+        "#a855f7", "#00f2fe", "#007acc", "#10b981", "#ef4444", 
+        "#f59e0b", "#8b5cf6", "#ec4899", "#374151"
+    ];
+
+    keywordChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: values,
+                backgroundColor: colors.slice(0, labels.length).map(c => c + "99"),
+                borderColor: '#121926',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: '#9ca3af',
+                        font: { size: 11 },
+                        padding: 12,
+                        boxWidth: 12,
+                        generateLabels: function(chart) {
+                            const data = chart.data;
+                            if (data.labels.length && data.datasets.length) {
+                                const dataset = data.datasets[0];
+                                const total = dataset.data.reduce((sum, val) => sum + val, 0);
+                                return data.labels.map((label, i) => {
+                                    const value = dataset.data[i];
+                                    const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                    return {
+                                        text: `${label}: ${value}회 (${percentage}%)`,
+                                        fillStyle: dataset.backgroundColor[i],
+                                        strokeStyle: dataset.borderColor,
+                                        lineWidth: dataset.borderWidth,
+                                        hidden: isNaN(dataset.data[i]) || chart.getDatasetMeta(0).data[i].hidden,
+                                        index: i,
+                                        fontColor: '#9ca3af'
+                                    };
+                                });
+                            }
+                            return [];
+                        }
+                    }
+                },
+                tooltip: {
+                    backgroundColor: '#121926',
+                    borderColor: 'rgba(255, 255, 255, 0.08)',
+                    borderWidth: 1,
+                    callbacks: {
+                        label: function(context) {
+                            const dataset = context.dataset;
+                            const total = dataset.data.reduce((sum, val) => sum + val, 0);
+                            const value = dataset.data[context.dataIndex];
+                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                            return ` ${value}회 (${percentage}%)`;
+                        }
+                    }
+                }
+            },
+            cutout: '65%'
+        }
+    });
+}
+
+function renderTagChart(data) {
+    const canvas = document.getElementById("tagChart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    if (tagChartInstance) {
+        tagChartInstance.destroy();
+    }
+
+    if (!data || data.length === 0) {
+        drawEmptyChartState(ctx, "데이터 없음");
+        return;
+    }
+
+    const labels = data.map(item => item.name);
+    const values = data.map(item => item.value);
+
+    const colors = [
+        "#00f2fe", "#007acc", "#a855f7", "#10b981", "#ef4444", 
+        "#f59e0b", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899"
+    ];
+
+    tagChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: '언급 횟수',
+                data: values,
+                backgroundColor: colors.slice(0, labels.length).map(c => c + "99"),
+                borderColor: colors.slice(0, labels.length),
+                borderWidth: 1.5,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            indexAxis: 'y', // Horizontal bar chart
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#121926',
+                    titleColor: '#f3f4f6',
+                    bodyColor: '#f3f4f6',
+                    borderColor: 'rgba(255, 255, 255, 0.08)',
+                    borderWidth: 1,
+                    callbacks: {
+                        label: function(context) {
+                            return ` ${context.raw}회`;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    ticks: { color: '#9ca3af', font: { size: 11 }, precision: 0 },
+                    beginAtZero: true
+                },
+                y: {
+                    grid: { display: false },
+                    ticks: { color: '#9ca3af', font: { size: 11 } }
+                }
+            }
+        }
+    });
+}
+
+function renderCompetitorLatestWidget(data) {
+    const container = document.getElementById("competitor-latest-widget");
+    if (!container) return;
+    
+    container.innerHTML = "";
+    
+    if (!data || data.length === 0) {
+        container.innerHTML = `<div class="empty-state-small" style="padding: 24px; text-align: center; color: var(--text-help); font-size: 13px;">수집된 경쟁사 출시 정보가 없습니다.</div>`;
+        return;
+    }
+    
+    const listWrapper = document.createElement("div");
+    listWrapper.className = "comp-releases-list";
+    
+    data.forEach(group => {
+        const compGroup = document.createElement("div");
+        compGroup.className = "competitor-group";
+        
+        const groupTitle = document.createElement("div");
+        groupTitle.className = "competitor-group-title";
+        groupTitle.textContent = `${group.competitor_name} (${group.releases.length}개 최신 업데이트)`;
+        compGroup.appendChild(groupTitle);
+        
+        if (!group.releases || group.releases.length === 0) {
+            const emptyItem = document.createElement("div");
+            emptyItem.style.color = "var(--text-help)";
+            emptyItem.style.fontSize = "12px";
+            emptyItem.style.padding = "8px 12px";
+            emptyItem.textContent = "최근 릴리즈 정보가 없습니다.";
+            compGroup.appendChild(emptyItem);
+        } else {
+            group.releases.forEach(rel => {
+                const row = document.createElement("div");
+                row.className = "comp-release-row-grouped";
+                
+                // 1. Title Cell (Title Link & Date)
+                const titleCell = document.createElement("div");
+                titleCell.className = "comp-release-title-cell";
+                
+                const link = document.createElement("a");
+                link.className = "comp-release-link";
+                link.href = rel.link;
+                link.target = "_blank";
+                link.textContent = rel.title;
+                link.title = rel.title;
+                
+                const dateSpan = document.createElement("span");
+                dateSpan.className = "comp-release-date";
+                dateSpan.textContent = rel.date ? `📅 ${formatDateOnly(rel.date)}` : "날짜 미상";
+                
+                titleCell.appendChild(link);
+                titleCell.appendChild(dateSpan);
+                
+                // 2. Summary Cell
+                const summaryCell = document.createElement("div");
+                summaryCell.className = "comp-release-summary-cell";
+                summaryCell.textContent = rel.summary || "AI 요약 내용이 없습니다.";
+                summaryCell.title = rel.summary || "";
+                
+                // 3. Impact Cell
+                const impactCell = document.createElement("div");
+                impactCell.className = "comp-release-impact-cell";
+                impactCell.textContent = rel.impact || "영향도 분석 대기 중";
+                impactCell.title = rel.impact || "";
+                
+                row.appendChild(titleCell);
+                row.appendChild(summaryCell);
+                row.appendChild(impactCell);
+                
+                compGroup.appendChild(row);
+            });
+        }
+        
+        listWrapper.appendChild(compGroup);
+    });
+    
+    container.appendChild(listWrapper);
+}
+
+function renderTrendLatestWidget(data) {
+    const container = document.getElementById("trend-latest-widget");
+    if (!container) return;
+    
+    container.innerHTML = "";
+    
+    if (!data || data.length === 0) {
+        container.innerHTML = `<div class="empty-state-small" style="padding: 24px; text-align: center; color: var(--text-help); font-size: 13px;">수집된 기술 트렌드 소식이 없습니다.</div>`;
+        return;
+    }
+    
+    const listWrapper = document.createElement("div");
+    listWrapper.className = "comp-releases-list";
+    
+    data.forEach(trend => {
+        const row = document.createElement("div");
+        row.className = "trend-release-row";
+        
+        // 1. Keyword/Source Badge
+        const badge = document.createElement("span");
+        badge.className = "comp-release-badge";
+        badge.style.background = "linear-gradient(135deg, var(--color-purple), #7c3aed)";
+        badge.textContent = trend.keyword;
+        badge.title = trend.keyword;
+        
+        // 2. Title Cell
+        const titleCell = document.createElement("div");
+        titleCell.className = "comp-release-title-cell";
+        
+        const link = document.createElement("a");
+        link.className = "comp-release-link";
+        link.href = trend.link;
+        link.target = "_blank";
+        link.textContent = trend.title;
+        link.title = trend.title;
+        
+        const dateSpan = document.createElement("span");
+        dateSpan.className = "comp-release-date";
+        dateSpan.textContent = (trend.source ? `${trend.source} • ` : "") + (trend.date ? `📅 ${formatDateOnly(trend.date)}` : "날짜 미상");
+        
+        titleCell.appendChild(link);
+        titleCell.appendChild(dateSpan);
+        
+        // 3. Summary Cell
+        const summaryCell = document.createElement("div");
+        summaryCell.className = "comp-release-summary-cell";
+        summaryCell.textContent = trend.summary || "요약 내용이 없습니다.";
+        summaryCell.title = trend.summary || "";
+        
+        row.appendChild(badge);
+        row.appendChild(titleCell);
+        row.appendChild(summaryCell);
+        
+        listWrapper.appendChild(row);
+    });
+    
+    container.appendChild(listWrapper);
+}
+
+function drawEmptyChartState(ctx, text) {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, width / 2, height / 2);
 }
