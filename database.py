@@ -194,16 +194,21 @@ def init_db():
     default_templates = [
         ("basic", "[기본] 기술 신호 및 경쟁사 동향 보고서", 
          """You are a senior technology strategy analyst for the 솔루션전략팀.
-Write a Korean strategic technology signal report from the collected competitor updates and industry news.
+Write a Korean strategic intelligence report from collected competitor updates and industry news.
 
-Your job is not to summarize every item one by one. Your job is to identify repeated signals, keyword frequency, competitor direction, and strategic implications.
+The report must be analytical, not a news digest.
+Do not list collected items one by one in the main body.
+Use the collected items only as evidence to infer repeated signals, competitor direction, technology trend momentum, and strategic implications.
 
 Rules:
 - Use only the evidence in the collected data below. If evidence is weak, say "현재 수집 데이터 기준".
-- Treat repeated keywords, similar product updates, and recurring themes as market signals.
+- Treat repeated keywords, similar product updates, and recurring themes as strategic market signals.
 - Mention concrete competitors/products when available.
-- Separate facts from interpretation.
-- Keep the tone professional, concise, and useful for solution strategy work.
+- Separate facts, interpretation, and recommended actions.
+- Avoid generic statements such as "지속 추적이 필요합니다" unless you explain exactly why.
+- Main sections 2~5 must contain interpretation and synthesis, not raw item lists.
+- Raw evidence may appear only in the final evidence appendix.
+- Keep the tone professional, concise, and useful for solution strategy, competitive positioning, and proposal/RFP work.
 
 [Competitor Docs Updates]
 {docs_context}
@@ -216,16 +221,16 @@ Please structure the report exactly as follows:
 
 ## 1. Executive Summary
 - 이번 기간 가장 중요한 기술/경쟁 신호를 3~5개 bullet로 요약합니다.
-- 각 bullet은 "무슨 변화가 보이는지"와 "왜 중요한지"를 함께 설명합니다.
+- 각 bullet은 "무슨 변화가 보이는지", "왜 중요한지", "우리에게 어떤 판단을 요구하는지"를 함께 설명합니다.
 
 ## 2. 자주 등장한 기술 키워드
-- 수집 데이터에서 반복적으로 등장한 키워드를 빈도/중요도 기준으로 정리합니다.
-- 각 키워드별로 "등장 맥락", "의미", "솔루션전략팀 관점의 해석"을 작성합니다.
-- 가능하면 표 형식으로 작성합니다.
+- 반복 키워드를 단순 빈도표로 끝내지 말고, 기술 흐름으로 묶어 해석합니다.
+- 각 키워드별로 "등장 맥락", "전략적 의미", "우리 제품/제안 전략과의 연결점"을 표로 작성합니다.
 
 ## 3. 경쟁사 동향 및 제품 방향성
-- 경쟁사/제품별 업데이트를 묶어서 어떤 방향으로 움직이는지 분석합니다.
-- 단순 기능 나열이 아니라 "AI 강화", "보안 내재화", "관리/거버넌스 강화", "비용 통제" 같은 방향성으로 해석합니다.
+- 경쟁사/제품별 업데이트를 묶어 어떤 제품 전략으로 움직이는지 분석합니다.
+- 단순 기능 나열 금지. "AI 내재화", "보안 자동화", "관리/거버넌스 강화", "비용 통제", "개발자 생산성" 같은 방향성으로 해석합니다.
+- 각 경쟁사별로 우리 솔루션 포지션에 주는 압박 또는 기회를 작성합니다.
 
 ## 4. 반복 신호와 시장 해석
 - 여러 항목에서 반복되는 신호를 3~5개 뽑습니다.
@@ -238,23 +243,30 @@ Please structure the report exactly as follows:
 ## 6. 다음 액션 제안
 - 다음 달까지 추적할 키워드, 추가해야 할 RSS/경쟁사, 내부 검토 과제를 제안합니다.
 
+## 7. 근거 데이터 부록
+- 본문 분석에 사용한 대표 근거 5~10개만 짧게 나열합니다.
+- 이 섹션을 제외한 본문에서는 수집 항목을 그대로 나열하지 마세요.
+
 Make the formatting clean and highly readable for Markdown."""),
         
         ("monthly", "[월간] 솔루션전략팀 월간 전략 보고서",
-         """You are writing a monthly strategic report for the 솔루션전략팀.
-Analyze collected competitor updates and technology news as strategic market intelligence.
+         """You are writing a monthly strategic intelligence report for the 솔루션전략팀.
+Analyze collected competitor updates and technology news to explain what is changing in the market and what it means for our solution strategy.
 
-Focus on:
-- Which technology keywords appeared repeatedly
-- What signals are emerging
-- Which competitors are moving in which direction
-- What this means for our solution strategy
-- What should be tracked or acted on next
+The audience does not need a list of articles. They need judgment:
+- What latest movements are visible from the collected data?
+- Which technology themes are gaining momentum?
+- Which competitors or ecosystems are moving in which direction?
+- What signals matter for product positioning, RFP/proposal messaging, and roadmap discussion?
+- What should be watched next?
 
 Rules:
 - Do not write a generic news summary.
-- Use evidence from the collected data.
+- Do not list collected items one by one in sections 2~5.
+- Use evidence from the collected data, but synthesize it into themes and implications.
 - If the dataset is still small, explicitly state that the finding is based on limited accumulated data.
+- Distinguish "observed fact", "interpretation", and "recommended action".
+- Raw article/release examples may appear only in the final evidence appendix.
 
 [Competitor Docs Updates]
 {docs_context}
@@ -267,18 +279,20 @@ Please structure the report exactly as follows:
 
 ## 1. 전략적 핵심 요약
 - 이번 달 기술 시장과 경쟁사 움직임의 핵심 결론을 5개 이내로 정리합니다.
+- 각 bullet은 단순 요약이 아니라 "관측된 변화 → 전략적 의미" 형태로 작성합니다.
 
 ## 2. 기술 키워드 빈도 및 중요도 분석
-- 반복 등장 키워드를 표로 정리합니다.
-- 각 키워드에 대해 등장 맥락, 전략적 의미, 향후 추적 필요성을 설명합니다.
+- 반복 등장 키워드를 빈도와 중요도 기준으로 묶어 분석합니다.
+- 각 키워드에 대해 "어떤 맥락에서 반복되는지", "왜 지금 중요한지", "우리 제품/전략에 어떤 질문을 던지는지"를 표로 작성합니다.
 
-## 3. 경쟁사별 움직임
-- 경쟁사/제품별 업데이트를 요약하고, 그 배후의 제품 전략을 추정합니다.
-- 기능 개선, AI, 보안, DevSecOps, 거버넌스, 비용 관리 중 어떤 축에 집중하는지 분석합니다.
+## 3. 경쟁사/생태계 최신 움직임 분석
+- 경쟁사와 기술 생태계별 업데이트를 묶어 최신 움직임을 해석합니다.
+- 단순 업데이트 요약 금지. "이 출처가 어떤 전략 축을 강화하고 있는지"를 분석합니다.
+- 가능하면 경쟁사별로 다음 형식으로 작성합니다: 관측된 움직임 / 해석 / 우리에게 주는 의미.
 
 ## 4. 이번 달의 핵심 신호
 - 데이터에서 드러난 반복 신호를 3~5개 도출합니다.
-- 각 신호별로 근거, 해석, 우리에게 주는 의미를 구분합니다.
+- 각 신호별로 근거, 해석, 우리에게 주는 의미, 추적 필요성을 구분합니다.
 
 ## 5. 우리 솔루션 전략에 대한 영향
 - 경쟁 위협 수준을 상/중/하로 평가합니다.
@@ -288,6 +302,10 @@ Please structure the report exactly as follows:
 - 반드시 추적해야 할 키워드
 - 추가할 경쟁사/RSS
 - 내부 논의가 필요한 제품/전략 과제
+
+## 7. 근거 데이터 부록
+- 본문 분석에 사용한 대표 근거만 5~10개 나열합니다.
+- 제목, 출처, 발행일 정도만 짧게 적고, 긴 요약 나열은 피합니다.
 
 Make the formatting clean and highly readable for Markdown."""),
         
@@ -547,6 +565,14 @@ def get_pending_ai_docs(profile_id: int, limit: int = 20) -> List[Dict[str, Any]
     conn.close()
     return [dict(r) for r in rows]
 
+def get_doc_by_id(doc_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scanned_docs WHERE id = ?", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
 def update_doc_analysis(doc_id: int, summary: str, impact: str, keywords: List[str], analysis_status: str = "complete", analysis_error: str = "") -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -574,6 +600,14 @@ def get_pending_ai_trends(profile_id: int, limit: int = 20) -> List[Dict[str, An
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def get_trend_by_id(trend_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scanned_trends WHERE id = ?", (trend_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
 
 def update_trend_analysis(trend_id: int, title: str, summary: str, source: str, analysis_status: str = "complete", analysis_error: str = "") -> bool:
     conn = get_db_connection()
@@ -885,8 +919,31 @@ def get_profile_stats(profile_id: int) -> Dict[str, Any]:
             ORDER BY date DESC LIMIT 3
         """, (profile_id, comp))
         releases = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM scanned_docs
+            WHERE profile_id = ? AND doc_type = 'competitor' AND competitor = ?
+        """, (profile_id, comp))
+        total_count = cursor.fetchone()["count"]
+
+        tag_counts = {}
+        for rel in releases:
+            for kw in (rel.get("keywords") or "").split(","):
+                kw_clean = kw.strip()
+                if kw_clean and kw_clean not in ("General", "AI 요약 대기", "AI 요약 대기 중", "미분류"):
+                    tag_counts[kw_clean] = tag_counts.get(kw_clean, 0) + 1
+        top_keywords = [
+            {"name": name, "value": count}
+            for name, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        ]
+
+        latest_release = releases[0] if releases else {}
         latest_competitor_releases.append({
             "competitor_name": comp,
+            "total_count": total_count,
+            "top_keywords": top_keywords,
+            "latest_release": latest_release,
+            "signal": latest_release.get("impact", "") if latest_release else "",
             "releases": releases
         })
         
@@ -978,6 +1035,10 @@ def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool =
 # --- STRATEGIC REPORTS ---
 
 def save_report(profile_id: int, title: str, content: str, report_type: str = "weekly", period_key: str = "") -> bool:
+    if not (content or "").strip():
+        print("[Database] Refusing to save empty report content.")
+        return False
+
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -1014,7 +1075,7 @@ def report_exists(profile_id: int, report_type: str, period_key: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT 1 FROM reports WHERE profile_id = ? AND report_type = ? AND period_key = ? LIMIT 1",
+        "SELECT 1 FROM reports WHERE profile_id = ? AND report_type = ? AND period_key = ? AND LENGTH(TRIM(content)) > 0 LIMIT 1",
         (profile_id, report_type, period_key)
     )
     exists = cursor.fetchone() is not None

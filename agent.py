@@ -9,6 +9,7 @@ import os
 import json
 import argparse
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
@@ -27,6 +28,9 @@ FOLDER_TRENDS = "Tech Watch - Trends"
 FOLDER_REPORTS = "Tech Watch - Reports"
 NEWS_RECENCY_DAYS = 2
 ALERT_FRESHNESS_HOURS = 168
+AUTO_AI_SUMMARY_ON_SCAN = False
+DOC_ITEMS_PER_FEED = 5
+TREND_ITEMS_PER_KEYWORD = 2
 ai_cooldown_until = None
 
 def is_quota_error(error_text: str) -> bool:
@@ -50,8 +54,8 @@ def is_ai_cooling_down() -> bool:
 
 def pending_doc_analysis(reason: str = "") -> dict:
     return {
-        "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
-        "impact": "AI 분석 대기 중입니다. 다음 스캔에서 요약을 다시 시도합니다.",
+        "summary": "AI 요약 대기 중입니다. 원문 메타데이터를 먼저 수집했고, 필요한 항목만 선택해 AI 요약을 생성할 수 있습니다.",
+        "impact": "중요 보관함에 담거나 AI 요약 생성 버튼을 눌러 분석하세요.",
         "keywords": ["AI 요약 대기"],
         "analysis_status": "pending",
         "analysis_error": reason[:300]
@@ -60,7 +64,7 @@ def pending_doc_analysis(reason: str = "") -> dict:
 def pending_trend_analysis(article: dict, reason: str = "") -> dict:
     return {
         "title": article.get("title", "제목 확인 필요"),
-        "summary": "AI 요약 대기 중입니다. Gemini 한도 또는 일시 오류로 원문만 먼저 수집했습니다.",
+        "summary": "AI 요약 대기 중입니다. 원문 메타데이터를 먼저 수집했고, 필요한 항목만 선택해 AI 요약을 생성할 수 있습니다.",
         "source": "AI 요약 대기",
         "analysis_status": "pending",
         "analysis_error": reason[:300]
@@ -306,10 +310,199 @@ async def generate_strategic_report(agent: Agent, doc_notes: list, trend_notes: 
                             
     try:
         response = await agent.chat(prompt)
-        return await response.text()
+        report_text = (await response.text()).strip()
+        if report_text:
+            return report_text
+        print("[Report Warning] AI returned an empty report. Falling back to local data report.")
     except Exception as e:
         print(f"Error generating strategic report: {e}")
-        return f"# Tech Watch 전략 보고서 ({current_date})\n\nFailed to generate report using AI: {e}"
+        return build_fallback_strategic_report(doc_notes, trend_notes, current_date, error=str(e))
+
+    return build_fallback_strategic_report(doc_notes, trend_notes, current_date)
+
+def strip_html(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def short_text(value: str, limit: int = 180) -> str:
+    text = strip_html(value)
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+def normalize_report_date(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "날짜 미상"
+    try:
+        return parsedate_to_datetime(raw).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    match = re.search(r"\d{4}-\d{2}-\d{2}", raw)
+    return match.group(0) if match else raw[:10]
+
+def classify_signal(name: str) -> str:
+    text = (name or "").lower()
+    if any(token in text for token in ["ai", "copilot", "llm", "rag", "agent", "에이전트", "인공지능", "엔지니어링"]):
+        return "AI 기반 개발/운영 자동화"
+    if any(token in text for token in ["security", "devsecops", "secret", "code scanning", "dependabot", "보안", "시크릿", "규제", "거버넌스"]):
+        return "보안·거버넌스 내재화"
+    if any(token in text for token in ["ci/cd", "cicd", "automation", "gitops", "devops", "자동화", "배포"]):
+        return "개발 파이프라인 자동화"
+    if any(token in text for token in ["cloud", "kubernetes", "platform", "azure", "클라우드", "쿠버네티스", "플랫폼"]):
+        return "클라우드·플랫폼 운영 고도화"
+    if any(token in text for token in ["productivity", "developer", "dx", "idp", "생산성", "개발자 경험"]):
+        return "개발자 경험 및 생산성"
+    if any(token in text for token in ["finops", "cost", "billing", "budget", "비용", "금융"]):
+        return "비용 통제 및 FinOps"
+    return "기타 기술 신호"
+
+def report_signal_sentence(signal: str) -> str:
+    mapping = {
+        "AI 기반 개발/운영 자동화": "AI가 단순 보조 기능을 넘어 코드 리뷰, 운영 자동화, 엔지니어링 의사결정 흐름 안으로 들어오고 있습니다.",
+        "보안·거버넌스 내재화": "보안과 거버넌스가 별도 점검 단계가 아니라 개발·배포 파이프라인 안에 기본 기능으로 흡수되는 흐름이 강합니다.",
+        "개발 파이프라인 자동화": "CI/CD와 자동화 관련 신호는 개발 속도와 안정성을 동시에 확보하려는 플랫폼 경쟁으로 해석됩니다.",
+        "클라우드·플랫폼 운영 고도화": "클라우드와 플랫폼 운영 영역에서는 다중 환경 관리, 인프라 효율화, 운영 표준화 요구가 계속 커지고 있습니다.",
+        "개발자 경험 및 생산성": "개발자 경험 개선은 단순 편의 기능이 아니라 조직 전체의 개발 처리량과 품질을 높이는 경쟁 축으로 이동하고 있습니다.",
+        "비용 통제 및 FinOps": "비용 가시성과 사용량 통제는 AI·클라우드 확산에 따라 구매 의사결정에서 더 중요한 기준이 되고 있습니다.",
+    }
+    return mapping.get(signal, "반복적으로 관측되는 기술 항목은 아직 방향성이 명확하진 않지만 후속 추적 가치가 있습니다.")
+
+def report_action_sentence(signal: str) -> str:
+    mapping = {
+        "AI 기반 개발/운영 자동화": "우리 제품 메시지에서도 AI 기능 자체보다 업무 흐름 안에서 어떤 판단과 실행을 줄여주는지 강조해야 합니다.",
+        "보안·거버넌스 내재화": "제안서/RFP 대응 시 보안 자동화, 감사 추적, 정책 통제 기능을 별도 장점으로 구조화할 필요가 있습니다.",
+        "개발 파이프라인 자동화": "운영 자동화와 배포 안정성 지표를 경쟁 비교 항목으로 관리하고, 고객 사례 언어로 전환해야 합니다.",
+        "클라우드·플랫폼 운영 고도화": "멀티 클라우드, 쿠버네티스, 플랫폼 엔지니어링 관련 요구를 제품 포지션 자료에 반영해야 합니다.",
+        "개발자 경험 및 생산성": "개발자 생산성 개선을 정량 지표와 연결해 제품 가치 제안에 포함하는 것이 좋습니다.",
+        "비용 통제 및 FinOps": "AI와 클라우드 사용량 증가에 따른 비용 통제 메시지를 전략 자료에 포함해야 합니다.",
+    }
+    return mapping.get(signal, "추가 데이터가 쌓이면 별도 주제로 분리해 추세 변화를 확인하는 것이 좋습니다.")
+
+def build_fallback_strategic_report(doc_notes: list, trend_notes: list, current_date: str, error: str = "") -> str:
+    """Builds a non-empty strategic report from stored metadata when AI report generation fails."""
+    competitor_counts = Counter((note.get("competitor") or "Unknown").strip() for note in doc_notes)
+    keyword_counts = Counter()
+    competitor_keyword_counts = {}
+    signal_counts = Counter()
+
+    for note in doc_notes:
+        competitor = (note.get("competitor") or "Unknown").strip()
+        competitor_keyword_counts.setdefault(competitor, Counter())
+        for keyword in (note.get("keywords") or "").split(","):
+            keyword = keyword.strip()
+            if keyword and keyword not in ("General", "AI 요약 대기", "AI 요약 대기 중", "미분류"):
+                keyword_counts[keyword] += 1
+                competitor_keyword_counts[competitor][keyword] += 1
+                signal_counts[classify_signal(keyword)] += 1
+    for note in trend_notes:
+        keyword = (note.get("keyword") or "").strip()
+        if keyword:
+            keyword_counts[keyword] += 1
+            signal_counts[classify_signal(keyword)] += 1
+
+    top_competitors = competitor_counts.most_common(5)
+    top_keywords = keyword_counts.most_common(8)
+    top_signals = signal_counts.most_common(5)
+    meaningful_signals = [(name, count) for name, count in top_signals if name != "기타 기술 신호"]
+    signals_for_report = meaningful_signals or top_signals
+    evidence_docs = doc_notes[:5]
+    evidence_trends = trend_notes[:5]
+    source_basis = f"경쟁사/기술 레퍼런스 {len(doc_notes)}건, 기술 트렌드 {len(trend_notes)}건"
+
+    lines = [
+        f"# 솔루션전략팀 전략 보고서 ({current_date})",
+        "",
+        "## 1. 핵심 요약",
+        f"- 이번 보고서는 {source_basis}을 기준으로 작성되었습니다.",
+    ]
+    if signals_for_report:
+        strongest_signal = signals_for_report[0][0]
+        lines.append(f"- 현재 가장 강한 신호는 **{strongest_signal}**입니다. {report_signal_sentence(strongest_signal)}")
+    if top_keywords:
+        lines.append("- 반복 키워드는 " + ", ".join([f"**{name}**({count}건)" for name, count in top_keywords[:5]]) + " 순으로 나타났습니다.")
+    if top_competitors:
+        lines.append("- 관측량 기준 주요 출처는 " + ", ".join([f"**{name}**({count}건)" for name, count in top_competitors[:3]]) + "이며, 이 출처들의 제품/기술 메시지 변화가 우선 추적 대상입니다.")
+    if error:
+        lines.append("- AI 보고서 생성이 실패하여, 저장된 메타데이터와 기존 요약을 바탕으로 분석형 기본 보고서를 자동 생성했습니다.")
+    else:
+        lines.append("- AI 응답이 비어 있어, 저장된 메타데이터와 기존 요약을 바탕으로 분석형 기본 보고서를 자동 생성했습니다.")
+
+    lines += [
+        "",
+        "## 2. 기술 트렌드 분석",
+    ]
+    if top_keywords:
+        lines.append("| 키워드 | 관측량 | 해석 | 추적 포인트 |")
+        lines.append("| --- | ---: | --- | --- |")
+        for name, count in top_keywords[:8]:
+            signal = classify_signal(name)
+            lines.append(f"| {name} | {count}건 | {report_signal_sentence(signal)} | {report_action_sentence(signal)} |")
+    else:
+        lines.append("- 아직 집계 가능한 키워드가 충분하지 않습니다.")
+
+    lines += [
+        "",
+        "## 3. 경쟁사 및 기술 레퍼런스 움직임 해석",
+    ]
+    if top_competitors:
+        for competitor, count in top_competitors:
+            top_comp_keywords = competitor_keyword_counts.get(competitor, Counter()).most_common(4)
+            keyword_text = ", ".join([f"{name}({qty})" for name, qty in top_comp_keywords]) or "키워드 미분류"
+            dominant_signal = classify_signal(top_comp_keywords[0][0]) if top_comp_keywords else "기타 기술 신호"
+            lines.append(f"- **{competitor}**: {count}건 관측, 주요 키워드는 {keyword_text}입니다.")
+            lines.append(f"  - 해석: {report_signal_sentence(dominant_signal)}")
+            lines.append(f"  - 전략 관점: {report_action_sentence(dominant_signal)}")
+    else:
+        lines.append("- 해당 범위에서 경쟁사/기술 레퍼런스 항목이 발견되지 않았습니다.")
+
+    lines += [
+        "",
+        "## 4. 이번 기간의 핵심 신호",
+    ]
+    if signals_for_report:
+        for signal, count in signals_for_report[:5]:
+            related_keywords = [name for name, _ in top_keywords if classify_signal(name) == signal][:4]
+            related_text = ", ".join(related_keywords) if related_keywords else "관련 키워드 추가 확인 필요"
+            lines.append(f"### {signal}")
+            lines.append(f"- 근거: 관련 키워드/태그가 총 {count}회 관측되었습니다. 주요 관련 키워드: {related_text}.")
+            lines.append(f"- 해석: {report_signal_sentence(signal)}")
+            lines.append(f"- 영향: {report_action_sentence(signal)}")
+    else:
+        lines.append("- 아직 반복 신호를 도출할 만큼 데이터가 충분하지 않습니다.")
+
+    lines += [
+        "",
+        "## 5. 전략적 시사점",
+        "- 제품 전략: 반복 신호가 강한 영역은 우리 제품의 기능 비교표, 로드맵 검토, 경쟁 포지션 문서에 별도 축으로 반영해야 합니다.",
+        "- 제안/RFP 전략: 고객에게는 단순 기능 보유 여부보다 자동화, 보안 내재화, 운영 비용 절감, 개발자 생산성 개선 관점의 메시지가 더 설득력 있게 작동할 가능성이 큽니다.",
+        "- 모니터링 운영: 빈도가 높거나 최근 급증한 키워드는 별도 폴더로 분리하고, 중요 항목은 보관함에 저장해 다음 보고서의 근거 데이터로 축적해야 합니다.",
+        "",
+        "## 6. 다음 추적 과제",
+        "- 상위 반복 키워드의 발행일 기준 증가/감소 추이를 다음 스캔에서도 확인합니다.",
+        "- 경쟁사별로 어떤 기술 축에 집중하는지 같은 형식으로 누적 비교합니다.",
+        "- AI 요약 대기 항목 중 전략 관련성이 높은 자료부터 선택 요약해 다음 보고서의 해석 품질을 높입니다.",
+        "",
+        "## 7. 근거 데이터 예시",
+    ]
+    if evidence_docs:
+        lines.append("### 경쟁사/기술 레퍼런스")
+        for note in evidence_docs:
+            title = note.get("title", "제목 없음")
+            competitor = note.get("competitor", "Unknown")
+            date = normalize_report_date(note.get("published_at") or note.get("date") or note.get("created_at"))
+            lines.append(f"- {date} | {competitor} | {title}")
+    if evidence_trends:
+        lines.append("### 기술 트렌드 뉴스")
+        for note in evidence_trends:
+            keyword = note.get("keyword", "키워드 미상")
+            source = note.get("source", "Source")
+            date = normalize_report_date(note.get("published_at") or note.get("created_at"))
+            title = note.get("title", "제목 없음")
+            lines.append(f"- {date} | {keyword} | {source} | {title}")
+
+    return "\n".join(lines)
 
 async def retry_pending_ai_analysis(agent: Agent, profile_id: int):
     """Retries AI summaries that were saved while Gemini was unavailable or rate-limited."""
@@ -373,6 +566,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
     print(f"\n==========================================")
     print(f"Running Monitoring Scan for Profile: '{profile_name}' (ID: {profile_id})")
     print(f"==========================================")
+    if not AUTO_AI_SUMMARY_ON_SCAN:
+        print("[AI Mode] Metadata-first scan enabled. New items are saved first; AI summaries run only by retry/selection.")
     
     # Resolve Apple Notes folder names for this profile
     folder_docs, folder_trends, _ = get_apple_notes_folders(profile_name)
@@ -386,7 +581,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
     except Exception as e:
         print(f"[Apple Notes Warning] Could not connect to Apple Notes: {e}. Storing data in SQLite database only.")
 
-    await retry_pending_ai_analysis(agent, profile_id)
+    if AUTO_AI_SUMMARY_ON_SCAN:
+        await retry_pending_ai_analysis(agent, profile_id)
 
     # Get feeds and keywords for this profile
     feeds = database.get_profile_feeds(profile_id)
@@ -411,7 +607,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
         updates = monitors.get_competitor_updates(feed_url)
         
         new_count = 0
-        for update in updates[:5]: # Check latest 5 entries from feed to prevent flooding
+        for update in updates[:DOC_ITEMS_PER_FEED]: # Check latest entries from feed to prevent flooding
             title = f"[{name}] {update['title']}"
             if title in existing_docs:
                 continue
@@ -419,7 +615,10 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
             is_recent = is_recent_source_item(update.get('date', ''))
                 
             print(f"New update found: {update['title']}")
-            analysis = await analyze_doc_update(agent, name, update)
+            if AUTO_AI_SUMMARY_ON_SCAN:
+                analysis = await analyze_doc_update(agent, name, update)
+            else:
+                analysis = pending_doc_analysis("metadata_only_scan")
             
             # Save to Database (Main Storage)
             saved = database.save_scanned_doc(
@@ -494,7 +693,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
         articles = monitors.search_google_news(keyword, recency_days=NEWS_RECENCY_DAYS)
         
         new_count = 0
-        for article in articles[:5]: # Check top 5 news entries
+        for article in articles[:TREND_ITEMS_PER_KEYWORD]: # Keep metadata-first scans lightweight
             title = f"[News] {article['title']}"
             # Check length or clean title to match existing titles
             if any(t in title or title in t for t in existing_trends):
@@ -502,7 +701,10 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
             published_at = normalize_source_date(article.get('date', ''))
             is_recent = is_recent_source_item(article.get('date', ''))
                 
-            analysis = await analyze_news_trend(agent, keyword, article)
+            if AUTO_AI_SUMMARY_ON_SCAN:
+                analysis = await analyze_news_trend(agent, keyword, article)
+            else:
+                analysis = pending_trend_analysis(article, "metadata_only_scan")
             if not analysis:
                 continue
                 

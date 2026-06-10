@@ -214,6 +214,71 @@ def parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
     except Exception:
         return None
 
+def parse_csv_keywords(value: str) -> List[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+async def summarize_doc_item(api_key: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = f"""
+Analyze this collected competitor/reference update for a Korean solution strategy team.
+
+Title: {item.get('title', '')}
+Source/Product: {item.get('competitor', '')}
+Link: {item.get('link', '')}
+Collected description/body:
+{item.get('summary', '')}
+
+Respond ONLY as valid JSON with this schema:
+{{
+  "summary": "핵심만 담은 한국어 2-3문장 요약",
+  "impact": "전략/제품/개발 생산성 관점의 시사점 1-2문장",
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}}
+"""
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You summarize collected tech-watch items for a Korean strategy team. Return valid JSON only."
+    )
+    async with Agent(config=sdk_config) as ai_agent:
+        response = await ai_agent.chat(prompt)
+        text = await response.text()
+    result = extract_json_object(text)
+    return {
+        "summary": str(result.get("summary", "")).strip() or item.get("summary", ""),
+        "impact": str(result.get("impact", "")).strip() or "AI 요약은 생성되었지만 시사점이 비어 있습니다.",
+        "keywords": [str(k).strip() for k in result.get("keywords", []) if str(k).strip()] or parse_csv_keywords(item.get("keywords", "")) or ["General"]
+    }
+
+async def summarize_trend_item(api_key: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = f"""
+Analyze this collected technology news item for a Korean solution strategy team.
+
+Keyword: {item.get('keyword', '')}
+Title: {item.get('title', '')}
+Link: {item.get('link', '')}
+Collected description/body:
+{item.get('summary', '')}
+
+Respond ONLY as valid JSON with this schema:
+{{
+  "title": "한국어로 정리한 간결한 제목",
+  "summary": "핵심만 담은 한국어 2-3문장 요약",
+  "source": "출처명 또는 News"
+}}
+"""
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You summarize collected tech trend items for a Korean strategy team. Return valid JSON only."
+    )
+    async with Agent(config=sdk_config) as ai_agent:
+        response = await ai_agent.chat(prompt)
+        text = await response.text()
+    result = extract_json_object(text)
+    return {
+        "title": str(result.get("title", "")).strip() or item.get("title", ""),
+        "summary": str(result.get("summary", "")).strip() or item.get("summary", ""),
+        "source": str(result.get("source", "")).strip() or "News"
+    }
+
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
     profile_id = profile["id"]
     interval_hours = max(int(profile.get("check_interval_hours") or 24), 1)
@@ -285,8 +350,9 @@ async def start_auto_scan_scheduler():
     global auto_scheduler_task, auto_retry_task
     if auto_scheduler_task is None or auto_scheduler_task.done():
         auto_scheduler_task = asyncio.create_task(auto_scan_scheduler())
-    if auto_retry_task is None or auto_retry_task.done():
-        auto_retry_task = asyncio.create_task(auto_retry_scheduler())
+    # AI summaries are intentionally user-triggered so Gemini quota is not spent
+    # just because many RSS/news items were collected in the background.
+    active_logs.append("[System] Auto AI summary retry is disabled. Use selected/manual summary actions.\n")
 
 @app.on_event("shutdown")
 async def stop_auto_scan_scheduler():
@@ -840,6 +906,61 @@ async def api_toggle_trend_star(trend_id: int, is_starred: bool):
     """Toggles star bookmark status for a tech trend news item."""
     database.toggle_trend_star(trend_id, 1 if is_starred else 0)
     return {"message": "Trend star status updated successfully."}
+
+@app.post("/api/summary/{item_type}/{item_id}")
+async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
+    """Generates an AI summary for one selected collected item."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for selected AI summaries.")
+
+    try:
+        if item_type == "doc":
+            item = database.get_doc_by_id(item_id)
+            if not item or item.get("profile_id") != profile_id:
+                raise HTTPException(status_code=404, detail="Doc item not found.")
+            analysis = await summarize_doc_item(api_key, item)
+            database.update_doc_analysis(
+                item_id,
+                analysis["summary"],
+                analysis["impact"],
+                analysis["keywords"],
+                "complete",
+                ""
+            )
+            return {"message": "Doc summary generated.", "item": database.get_doc_by_id(item_id)}
+
+        if item_type == "trend":
+            item = database.get_trend_by_id(item_id)
+            if not item or item.get("profile_id") != profile_id:
+                raise HTTPException(status_code=404, detail="Trend item not found.")
+            analysis = await summarize_trend_item(api_key, item)
+            database.update_trend_analysis(
+                item_id,
+                analysis["title"],
+                analysis["summary"],
+                analysis["source"],
+                "complete",
+                ""
+            )
+            return {"message": "Trend summary generated.", "item": database.get_trend_by_id(item_id)}
+
+        raise HTTPException(status_code=400, detail="item_type must be 'doc' or 'trend'.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        if item_type == "doc":
+            database.increment_doc_retry(item_id, str(e)[:300])
+        elif item_type == "trend":
+            database.increment_trend_retry(item_id, str(e)[:300])
+        raise HTTPException(status_code=500, detail=f"Failed to generate selected AI summary: {e}")
 
 @app.get("/api/reports")
 async def api_get_reports(profile_id: int, report_type: str = "all"):

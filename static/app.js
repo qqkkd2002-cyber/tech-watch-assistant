@@ -64,6 +64,7 @@ function createFeedCard(item, tabType) {
         ? `<strong>발행</strong> ${formatDateOnly(publishedDate)} / <strong>수집</strong> ${collectedDate}`
         : `<strong>수집</strong> ${collectedDate}`;
         
+    const itemType = item.type === "doc" ? "doc" : "trend";
     const isAnalysisPending = item.analysis_status === "pending";
     let pendingBadge = "";
     if (isAnalysisPending) {
@@ -131,7 +132,7 @@ function createFeedCard(item, tabType) {
                 ${badgeHtml}
                 ${pendingBadge}
             </div>
-            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${item.type === 'doc' ? 'doc' : 'trend'}" title="${starTitle}">★</button>
+            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" title="${starTitle}">★</button>
         </div>
         <a href="${escapeHtml(item.link)}" target="_blank" class="card-compact-title">${escapeHtml(item.title)}</a>
         <div class="card-compact-dates">
@@ -139,6 +140,7 @@ function createFeedCard(item, tabType) {
         </div>
         <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
             <button class="summary-toggle-btn">📄 AI 요약 보기</button>
+            ${isAnalysisPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
         </div>
         ${collapsibleHtml}
     `;
@@ -590,6 +592,12 @@ function setupEventListeners() {
     // Toggle accordion summary details for compact cards
     if (DOM.feedItemsGrid) {
         DOM.feedItemsGrid.addEventListener("click", (e) => {
+            const summaryBtn = e.target.closest(".selected-summary-btn");
+            if (summaryBtn) {
+                handleSelectedSummary(summaryBtn);
+                return;
+            }
+
             const btn = e.target.closest(".summary-toggle-btn");
             if (btn) {
                 const card = btn.closest(".feed-card-compact");
@@ -610,6 +618,12 @@ function setupEventListeners() {
 
     if (DOM.starredItemsGrid) {
         DOM.starredItemsGrid.addEventListener("click", (e) => {
+            const summaryBtn = e.target.closest(".selected-summary-btn");
+            if (summaryBtn) {
+                handleSelectedSummary(summaryBtn);
+                return;
+            }
+
             const btn = e.target.closest(".summary-toggle-btn");
             if (btn) {
                 const card = btn.closest(".feed-card-compact");
@@ -626,6 +640,36 @@ function setupEventListeners() {
                 }
             }
         });
+    }
+}
+
+async function handleSelectedSummary(btn) {
+    const itemId = btn.getAttribute("data-id");
+    const itemType = btn.getAttribute("data-type");
+    if (!itemId || !itemType || !currentProfileId) return;
+
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "요약 생성 중...";
+
+    try {
+        const res = await fetch(`/api/summary/${itemType}/${itemId}?profile_id=${currentProfileId}`, { method: "POST" });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || "AI 요약 생성에 실패했습니다.");
+        }
+        const activeTab = document.querySelector(".nav-item.active")?.getAttribute("data-tab");
+        if (activeTab === "starred") {
+            await loadStarredFeeds();
+        } else {
+            await loadFeeds();
+        }
+        await loadDashboardStats();
+    } catch (err) {
+        console.error("Selected summary error:", err);
+        alert(err.message || "AI 요약 생성에 실패했습니다.");
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }
 
@@ -860,7 +904,7 @@ function onProfileChanged() {
         loadStarredFeeds();
     } else if (activeTab === "reports") {
         loadReports();
-    } else if (activeTab === "dashboard") {
+    } else if (activeTab === "dashboard-competitor" || activeTab === "dashboard-trend") {
         loadDashboardStats();
     }
 }
@@ -2821,20 +2865,67 @@ function renderCompetitorChart(data) {
         };
     });
 
+    const stackedBarInsideLabelPlugin = {
+        id: 'stackedBarInsideLabel',
+        afterDatasetsDraw(chart) {
+            const { ctx } = chart;
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = '700 10px Inter, sans-serif';
+            ctx.fillStyle = '#f8fafc';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+            ctx.shadowBlur = 4;
+
+            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                const meta = chart.getDatasetMeta(datasetIndex);
+                if (!meta || meta.hidden) return;
+
+                dataset.data.forEach((value, index) => {
+                    const numericValue = Number(value);
+                    if (!numericValue || numericValue <= 0) return;
+
+                    const bar = meta.data[index];
+                    if (!bar || typeof bar.getProps !== 'function') return;
+
+                    const { x, y, base, width } = bar.getProps(['x', 'y', 'base', 'width'], true);
+                    const segmentHeight = Math.abs(base - y);
+                    const segmentWidth = width || 0;
+                    if (segmentHeight < 9 || segmentWidth < 44) return;
+
+                    const shortLabel = String(dataset.label)
+                        .replace("Developer Productivity", "Dev Prod")
+                        .replace("GitHub Copilot", "Copilot")
+                        .replace("Azure DevOps", "Azure")
+                        .replace("Automation", "Auto");
+                    let label = `${shortLabel}${numericValue > 1 ? ` ${numericValue}` : ''}`;
+                    const maxTextWidth = segmentWidth - 10;
+                    ctx.font = segmentHeight < 14 ? '800 8px Inter, sans-serif' : '700 10px Inter, sans-serif';
+                    while (label.length > 2 && ctx.measureText(label).width > maxTextWidth) {
+                        label = label.slice(0, -2) + '…';
+                    }
+
+                    const centerY = Math.min(y, base) + segmentHeight / 2;
+                    ctx.fillText(label, x, centerY);
+                });
+            });
+
+            ctx.restore();
+        }
+    };
+
     competitorChartInstance = new Chart(ctx, {
         type: 'bar',
         data: {
             labels: data.labels,
             datasets: datasets
         },
+        plugins: [stackedBarInsideLabelPlugin],
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'top',
-                    labels: { color: '#9ca3af', font: { size: 10 }, boxWidth: 10 }
-                },
+                legend: { display: false },
                 tooltip: {
                     backgroundColor: '#121926',
                     titleColor: '#f3f4f6',
@@ -2950,51 +3041,64 @@ function renderKeywordChart(data) {
         "#f59e0b", "#8b5cf6", "#ec4899", "#374151"
     ];
 
+    const keywordInsideLabelPlugin = {
+        id: 'keywordInsideLabel',
+        afterDatasetsDraw(chart) {
+            const { ctx, chartArea } = chart;
+            ctx.save();
+            ctx.textBaseline = 'middle';
+            ctx.font = '700 11px Inter, sans-serif';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+            ctx.shadowBlur = 4;
+
+            const meta = chart.getDatasetMeta(0);
+            const dataset = chart.data.datasets[0];
+            meta.data.forEach((bar, index) => {
+                const value = Number(dataset.data[index]);
+                if (!value || value <= 0 || !bar || typeof bar.getProps !== 'function') return;
+
+                const { x, y, base, height } = bar.getProps(['x', 'y', 'base', 'height'], true);
+                const barWidth = Math.abs(x - base);
+                const label = `${chart.data.labels[index]} ${value}건`;
+                const inside = barWidth > 110;
+                const maxTextWidth = inside ? barWidth - 18 : Math.max(80, chartArea.right - Math.max(x, base) - 10);
+                let displayLabel = label;
+
+                while (displayLabel.length > 2 && ctx.measureText(displayLabel).width > maxTextWidth) {
+                    displayLabel = displayLabel.slice(0, -2) + '…';
+                }
+
+                ctx.textAlign = inside ? 'left' : 'left';
+                ctx.fillStyle = inside ? '#f8fafc' : '#cbd5e1';
+                const labelX = inside ? Math.min(x, base) + 10 : Math.max(x, base) + 8;
+                ctx.fillText(displayLabel, labelX, y);
+            });
+
+            ctx.restore();
+        }
+    };
+
     keywordChartInstance = new Chart(ctx, {
-        type: 'doughnut',
+        type: 'bar',
         data: {
             labels: labels,
             datasets: [{
+                label: '수집 빈도',
                 data: values,
                 backgroundColor: colors.slice(0, labels.length).map(c => c + "99"),
-                borderColor: '#121926',
-                borderWidth: 2
+                borderColor: colors.slice(0, labels.length),
+                borderWidth: 1.5,
+                borderRadius: 4,
+                barThickness: 20
             }]
         },
+        plugins: [keywordInsideLabelPlugin],
         options: {
+            indexAxis: 'y',
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'right',
-                    labels: {
-                        color: '#9ca3af',
-                        font: { size: 11 },
-                        padding: 12,
-                        boxWidth: 12,
-                        generateLabels: function(chart) {
-                            const data = chart.data;
-                            if (data.labels.length && data.datasets.length) {
-                                const dataset = data.datasets[0];
-                                const total = dataset.data.reduce((sum, val) => sum + val, 0);
-                                return data.labels.map((label, i) => {
-                                    const value = dataset.data[i];
-                                    const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                                    return {
-                                        text: `${label}: ${value}회 (${percentage}%)`,
-                                        fillStyle: dataset.backgroundColor[i],
-                                        strokeStyle: dataset.borderColor,
-                                        lineWidth: dataset.borderWidth,
-                                        hidden: isNaN(dataset.data[i]) || chart.getDatasetMeta(0).data[i].hidden,
-                                        index: i,
-                                        fontColor: '#9ca3af'
-                                    };
-                                });
-                            }
-                            return [];
-                        }
-                    }
-                },
+                legend: { display: false },
                 tooltip: {
                     backgroundColor: '#121926',
                     borderColor: 'rgba(255, 255, 255, 0.08)',
@@ -3005,12 +3109,23 @@ function renderKeywordChart(data) {
                             const total = dataset.data.reduce((sum, val) => sum + val, 0);
                             const value = dataset.data[context.dataIndex];
                             const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                            return ` ${value}회 (${percentage}%)`;
+                            return `${context.label}: ${value}회 (${percentage}%)`;
                         }
                     }
                 }
             },
-            cutout: '65%'
+            scales: {
+                x: {
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    ticks: { color: '#9ca3af', font: { size: 10 }, precision: 0 },
+                    beginAtZero: true,
+                    suggestedMax: Math.max(...values) + 1
+                },
+                y: {
+                    grid: { display: false },
+                    ticks: { display: false }
+                }
+            }
         }
     });
 }
@@ -3096,68 +3211,63 @@ function renderCompetitorLatestWidget(data) {
     }
     
     const listWrapper = document.createElement("div");
-    listWrapper.className = "comp-releases-list";
+    listWrapper.className = "competitor-movement-grid";
     
     data.forEach(group => {
-        const compGroup = document.createElement("div");
-        compGroup.className = "competitor-group";
-        
-        const groupTitle = document.createElement("div");
-        groupTitle.className = "competitor-group-title";
-        groupTitle.textContent = `${group.competitor_name} (${group.releases.length}개 최신 업데이트)`;
-        compGroup.appendChild(groupTitle);
-        
+        const card = document.createElement("article");
+        card.className = "competitor-movement-card";
+
         if (!group.releases || group.releases.length === 0) {
-            const emptyItem = document.createElement("div");
-            emptyItem.style.color = "var(--text-help)";
-            emptyItem.style.fontSize = "12px";
-            emptyItem.style.padding = "8px 12px";
-            emptyItem.textContent = "최근 릴리즈 정보가 없습니다.";
-            compGroup.appendChild(emptyItem);
+            card.innerHTML = `
+                <div class="competitor-movement-header">
+                    <strong>${escapeHtml(group.competitor_name)}</strong>
+                    <span>0건</span>
+                </div>
+                <p class="competitor-movement-empty">최근 릴리즈 정보가 없습니다.</p>
+            `;
         } else {
-            group.releases.forEach(rel => {
-                const row = document.createElement("div");
-                row.className = "comp-release-row-grouped";
-                
-                // 1. Title Cell (Title Link & Date)
-                const titleCell = document.createElement("div");
-                titleCell.className = "comp-release-title-cell";
-                
-                const link = document.createElement("a");
-                link.className = "comp-release-link";
-                link.href = rel.link;
-                link.target = "_blank";
-                link.textContent = rel.title;
-                link.title = rel.title;
-                
-                const dateSpan = document.createElement("span");
-                dateSpan.className = "comp-release-date";
-                dateSpan.textContent = rel.date ? `📅 ${formatDateOnly(rel.date)}` : "날짜 미상";
-                
-                titleCell.appendChild(link);
-                titleCell.appendChild(dateSpan);
-                
-                // 2. Summary Cell
-                const summaryCell = document.createElement("div");
-                summaryCell.className = "comp-release-summary-cell";
-                summaryCell.textContent = rel.summary || "AI 요약 내용이 없습니다.";
-                summaryCell.title = rel.summary || "";
-                
-                // 3. Impact Cell
-                const impactCell = document.createElement("div");
-                impactCell.className = "comp-release-impact-cell";
-                impactCell.textContent = rel.impact || "영향도 분석 대기 중";
-                impactCell.title = rel.impact || "";
-                
-                row.appendChild(titleCell);
-                row.appendChild(summaryCell);
-                row.appendChild(impactCell);
-                
-                compGroup.appendChild(row);
+            const latest = group.latest_release || group.releases[0];
+            const topKeywords = (group.top_keywords || [])
+                .map(item => `<span>${escapeHtml(item.name)} ${item.value}</span>`)
+                .join("");
+            const moreCount = Math.max((group.releases || []).length - 1, 0);
+            const releaseLinks = (group.releases || []).slice(1, 3).map(rel => `
+                <a class="competitor-mini-link" href="${escapeHtml(rel.link)}" target="_blank" title="${escapeHtml(rel.title)}">
+                    ${escapeHtml(rel.title)}
+                </a>
+            `).join("");
+
+            card.innerHTML = `
+                <div class="competitor-movement-header">
+                    <strong>${escapeHtml(group.competitor_name)}</strong>
+                    <span>${group.total_count || group.releases.length}건 누적</span>
+                </div>
+                <div class="competitor-movement-tags">
+                    ${topKeywords || "<span>키워드 분석 대기</span>"}
+                </div>
+                <a class="competitor-movement-title" href="${escapeHtml(latest.link)}" target="_blank" title="${escapeHtml(latest.title)}">
+                    ${escapeHtml(latest.title)}
+                </a>
+                <div class="competitor-movement-meta">${latest.date ? `최근 ${formatDateOnly(latest.date)}` : "날짜 미상"}${moreCount ? ` · 관련 ${moreCount}건 더 있음` : ""}</div>
+                <p class="competitor-movement-summary">${escapeHtml(latest.summary || "AI 요약 대기 중입니다.")}</p>
+                <button type="button" class="competitor-signal-toggle">전략 시사점 보기</button>
+                <div class="competitor-signal-panel">
+                    <strong>전략 시사점</strong>
+                    <p>${escapeHtml(group.signal || latest.impact || "시사점 분석 대기 중입니다.")}</p>
+                    <div class="competitor-related-links">${releaseLinks}</div>
+                </div>
+            `;
+        }
+
+        const toggle = card.querySelector(".competitor-signal-toggle");
+        if (toggle) {
+            toggle.addEventListener("click", () => {
+                card.classList.toggle("expanded");
+                toggle.textContent = card.classList.contains("expanded") ? "전략 시사점 접기" : "전략 시사점 보기";
             });
         }
-        
-        listWrapper.appendChild(compGroup);
+
+        listWrapper.appendChild(card);
     });
     
     container.appendChild(listWrapper);
