@@ -204,6 +204,7 @@ const DOM = {
     toggleApiKeyBtn: document.getElementById("toggle-api-key"),
     webhookInput: document.getElementById("webhook-input"),
     intervalInput: document.getElementById("interval-input"),
+    autoScanToggle: document.getElementById("auto-scan-toggle"),
     autoReportToggle: document.getElementById("auto-report-toggle"),
     keywordFolderSelect: document.getElementById("keyword-folder-select"),
     keywordFolderInput: document.getElementById("keyword-folder-input"),
@@ -247,6 +248,10 @@ const DOM = {
     startScanBtn: document.getElementById("start-scan-btn"),
     startReportBtn: document.getElementById("start-report-btn"),
     stopProcessBtn: document.getElementById("stop-process-btn"),
+    sidebarAutoScanToggle: document.getElementById("sidebar-auto-scan-toggle"),
+    autoScanState: document.getElementById("auto-scan-state"),
+    autoScanNext: document.getElementById("auto-scan-next"),
+    autoScanLatest: document.getElementById("auto-scan-latest"),
     terminalOutputBody: document.getElementById("terminal-output-body"),
     clearLogsBtn: document.getElementById("clear-logs-btn"),
     
@@ -384,6 +389,9 @@ function setupEventListeners() {
     
     // Save Settings
     DOM.saveSettingsBtn.addEventListener("click", handleSaveSettings);
+    if (DOM.sidebarAutoScanToggle) {
+        DOM.sidebarAutoScanToggle.addEventListener("click", handleSidebarAutoScanToggle);
+    }
     
     // Delete Profile
     DOM.deleteProfileBtn.addEventListener("click", handleDeleteProfile);
@@ -723,6 +731,7 @@ function updateAdminControls() {
         DOM.apiKeyInput.removeAttribute("disabled");
         DOM.webhookInput.removeAttribute("disabled");
         DOM.intervalInput.removeAttribute("disabled");
+        if (DOM.autoScanToggle) DOM.autoScanToggle.removeAttribute("disabled");
         if (DOM.autoReportToggle) DOM.autoReportToggle.removeAttribute("disabled");
         if (DOM.keywordFolderInput) DOM.keywordFolderInput.removeAttribute("disabled");
         if (DOM.keywordFolderSelect) DOM.keywordFolderSelect.removeAttribute("disabled");
@@ -766,6 +775,7 @@ function updateAdminControls() {
         DOM.apiKeyInput.setAttribute("disabled", "true");
         DOM.webhookInput.setAttribute("disabled", "true");
         DOM.intervalInput.setAttribute("disabled", "true");
+        if (DOM.autoScanToggle) DOM.autoScanToggle.removeAttribute("disabled");
         if (DOM.autoReportToggle) DOM.autoReportToggle.setAttribute("disabled", "true");
         DOM.deleteProfileBtn.classList.add("disabled");
         DOM.deleteProfileBtn.setAttribute("disabled", "true");
@@ -843,6 +853,9 @@ function onProfileChanged() {
     DOM.apiKeyInput.value = profile.gemini_api_key || "";
     DOM.webhookInput.value = profile.discord_webhook_url || "";
     DOM.intervalInput.value = profile.check_interval_hours || 24;
+    if (DOM.autoScanToggle) {
+        DOM.autoScanToggle.checked = profile.auto_scan_enabled !== 0;
+    }
     if (DOM.autoReportToggle) {
         DOM.autoReportToggle.checked = profile.auto_report_enabled !== 0;
     }
@@ -1521,7 +1534,7 @@ function addFeedRow(name, url, feed_type) {
     addFeedRowElement(name, url, feed_type);
 }
 
-async function handleSaveSettings() {
+async function handleSaveSettings(options = {}) {
     const profile = profiles.find(p => p.id === currentProfileId);
     if (!profile) return;
     
@@ -1581,6 +1594,7 @@ async function handleSaveSettings() {
         feeds,
         report_template_type: DOM.templateTypeSelect.value,
         custom_report_template: DOM.customTemplateInput.value.trim(),
+        auto_scan_enabled: DOM.autoScanToggle ? DOM.autoScanToggle.checked : true,
         auto_report_enabled: DOM.autoReportToggle ? DOM.autoReportToggle.checked : true
     };
     
@@ -1595,7 +1609,9 @@ async function handleSaveSettings() {
         });
         
         if (res.ok) {
-            alert("설정이 성공적으로 저장되었습니다!");
+            if (!options.silent) {
+                alert("설정이 성공적으로 저장되었습니다!");
+            }
             // Refresh profiles state
             await loadProfiles();
         } else {
@@ -1606,6 +1622,29 @@ async function handleSaveSettings() {
         alert("설정 저장 중 오류가 발생했습니다.");
     }
 }
+
+async function handleSidebarAutoScanToggle() {
+    const profile = profiles.find(p => p.id === currentProfileId);
+    if (!profile || !DOM.autoScanToggle || !DOM.sidebarAutoScanToggle) return;
+
+    const nextEnabled = profile.auto_scan_enabled === 0;
+    DOM.autoScanToggle.checked = nextEnabled;
+    DOM.sidebarAutoScanToggle.classList.add("is-saving");
+    DOM.sidebarAutoScanToggle.textContent = "저장";
+
+    try {
+        await handleSaveSettings({ silent: true });
+        const statusUrl = currentProfileId ? `/api/status?profile_id=${currentProfileId}` : "/api/status";
+        const res = await fetch(statusUrl);
+        if (res.ok) {
+            const data = await res.json();
+            updateAutoScanInfo(data.auto_scan);
+        }
+    } finally {
+        DOM.sidebarAutoScanToggle.classList.remove("is-saving");
+    }
+}
+
 async function loadFeeds() {
     if (!currentProfileId) return;
     
@@ -2314,7 +2353,8 @@ function startLogPolling() {
 
 async function pollLogsLoop() {
     try {
-        const res = await fetch("/api/status");
+        const statusUrl = currentProfileId ? `/api/status?profile_id=${currentProfileId}` : "/api/status";
+        const res = await fetch(statusUrl);
         if (res.ok) {
             const data = await res.json();
             
@@ -2346,6 +2386,8 @@ async function pollLogsLoop() {
                 DOM.stopProcessBtn.setAttribute("disabled", "true");
                 DOM.stopProcessBtn.classList.add("disabled");
             }
+
+            updateAutoScanInfo(data.auto_scan);
             
             // 2. Stream logs only while the logs tab is visible. Large scans can produce
             // enough output to make other screens feel frozen if we re-render it every second.
@@ -2371,6 +2413,39 @@ async function pollLogsLoop() {
     
     // Loop
     logPollTimer = setTimeout(pollLogsLoop, 2000);
+}
+
+function updateAutoScanInfo(info) {
+    if (!DOM.autoScanState || !DOM.autoScanNext || !DOM.autoScanLatest) return;
+
+    if (!info || !info.enabled) {
+        DOM.autoScanState.textContent = "OFF";
+        DOM.autoScanState.classList.remove("is-enabled");
+        DOM.autoScanState.classList.add("is-disabled");
+        DOM.autoScanNext.textContent = info?.message || "자동 수집 꺼짐";
+        DOM.autoScanLatest.textContent = "";
+        if (DOM.sidebarAutoScanToggle) {
+            DOM.sidebarAutoScanToggle.textContent = "켜기";
+            DOM.sidebarAutoScanToggle.classList.add("is-off");
+            DOM.sidebarAutoScanToggle.title = "자동 수집 켜기";
+        }
+        return;
+    }
+
+    DOM.autoScanState.textContent = info.scheduler_running ? `ON · ${info.interval_hours}시간` : "확인 필요";
+    DOM.autoScanState.classList.remove("is-disabled");
+    DOM.autoScanState.classList.add("is-enabled");
+    DOM.autoScanNext.textContent = info.due_now
+        ? "다음: 곧 실행"
+        : `다음: ${formatDate(info.next_scan_at)}`;
+    DOM.autoScanLatest.textContent = info.latest_collection_at
+        ? `최근: ${formatDate(info.latest_collection_at)}`
+        : "최근: 아직 없음";
+    if (DOM.sidebarAutoScanToggle) {
+        DOM.sidebarAutoScanToggle.textContent = "끄기";
+        DOM.sidebarAutoScanToggle.classList.remove("is-off");
+        DOM.sidebarAutoScanToggle.title = "자동 수집 끄기";
+    }
 }
 
 function updateRunStatus(status, label) {
@@ -3025,20 +3100,26 @@ function renderKeywordChart(data) {
         return;
     }
 
-    let chartData = [...data];
-    if (chartData.length > 8) {
-        const top = chartData.slice(0, 7);
-        const remainingSum = chartData.slice(7).reduce((acc, curr) => acc + curr.value, 0);
-        top.push({ name: "기타", value: remainingSum });
-        chartData = top;
-    }
+    const MAX_VISIBLE_KEYWORDS = 18;
+    let chartData = [...data]
+        .filter(item => item && item.name && Number(item.value) > 0)
+        .sort((a, b) => Number(b.value) - Number(a.value))
+        .slice(0, MAX_VISIBLE_KEYWORDS);
 
     const labels = chartData.map(item => item.name);
     const values = chartData.map(item => item.value);
+    const wrapper = canvas.closest(".chart-wrapper");
+    if (wrapper) {
+        const targetHeight = Math.max(320, labels.length * 34 + 54);
+        wrapper.style.minHeight = `${targetHeight}px`;
+        wrapper.style.maxHeight = `${targetHeight}px`;
+    }
 
     const colors = [
         "#a855f7", "#00f2fe", "#007acc", "#10b981", "#ef4444", 
-        "#f59e0b", "#8b5cf6", "#ec4899", "#374151"
+        "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#3b82f6",
+        "#84cc16", "#f97316", "#06b6d4", "#d946ef", "#22c55e",
+        "#eab308", "#6366f1", "#f43f5e"
     ];
 
     const keywordInsideLabelPlugin = {
@@ -3085,11 +3166,11 @@ function renderKeywordChart(data) {
             datasets: [{
                 label: '수집 빈도',
                 data: values,
-                backgroundColor: colors.slice(0, labels.length).map(c => c + "99"),
-                borderColor: colors.slice(0, labels.length),
+                backgroundColor: labels.map((_, idx) => colors[idx % colors.length] + "99"),
+                borderColor: labels.map((_, idx) => colors[idx % colors.length]),
                 borderWidth: 1.5,
                 borderRadius: 4,
-                barThickness: 20
+                barThickness: 18
             }]
         },
         plugins: [keywordInsideLabelPlugin],

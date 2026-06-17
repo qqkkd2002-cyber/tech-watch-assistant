@@ -77,6 +77,7 @@ class ProfileUpdatePayload(BaseModel):
     gemini_api_key: str
     discord_webhook_url: str
     check_interval_hours: int
+    auto_scan_enabled: bool = True
     keywords: List[KeywordItem]
     feeds: List[FeedItem]
     report_template_type: str = 'basic'
@@ -280,6 +281,9 @@ Respond ONLY as valid JSON with this schema:
     }
 
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
+    if int(profile.get("auto_scan_enabled", 1) or 0) != 1:
+        return False
+
     profile_id = profile["id"]
     interval_hours = max(int(profile.get("check_interval_hours") or 24), 1)
     interval = timedelta(hours=interval_hours)
@@ -293,6 +297,39 @@ def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
         return False
     
     return True
+
+def get_profile_auto_scan_info(profile_id: Optional[int] = None) -> Dict[str, Any]:
+    profiles = database.get_profiles()
+    if not profiles:
+        return {"enabled": False, "message": "등록된 프로필이 없습니다."}
+
+    selected = None
+    if profile_id:
+        selected = next((p for p in profiles if p.get("id") == profile_id), None)
+    if selected is None:
+        selected = profiles[0]
+
+    interval_hours = max(int(selected.get("check_interval_hours") or 24), 1)
+    auto_scan_enabled = int(selected.get("auto_scan_enabled", 1) or 0) == 1
+    interval = timedelta(hours=interval_hours)
+    latest_collection = parse_db_datetime(database.get_latest_collection_at(selected["id"]))
+    last_attempt = last_auto_scan_attempts.get(selected["id"])
+    basis = max([dt for dt in [latest_collection, last_attempt] if dt], default=None)
+    next_scan_at = basis + interval if basis else datetime.now()
+    due_now = datetime.now() >= next_scan_at
+
+    return {
+        "enabled": auto_scan_enabled,
+        "profile_id": selected["id"],
+        "profile_name": selected["name"],
+        "interval_hours": interval_hours,
+        "latest_collection_at": latest_collection.isoformat() if latest_collection else None,
+        "last_attempt_at": last_attempt.isoformat() if last_attempt else None,
+        "next_scan_at": next_scan_at.isoformat(),
+        "due_now": due_now,
+        "scheduler_running": auto_scheduler_task is not None and not auto_scheduler_task.done(),
+        "message": "프로필 설정에서 자동 수집이 꺼져 있습니다." if not auto_scan_enabled else "",
+    }
 
 auto_retry_task: Optional[asyncio.Task] = None
 
@@ -431,13 +468,14 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
 # --- API Endpoints ---
 
 @app.get("/api/status")
-async def get_status(request: Request):
+async def get_status(request: Request, profile_id: Optional[int] = None):
     """Returns the status and current live logs."""
     tail_logs = active_logs[-300:]
     return {
         "status": scan_status,
         "active_profile_id": active_profile_id,
         "is_admin": is_localhost(request),
+        "auto_scan": get_profile_auto_scan_info(profile_id),
         "log_line_count": len(active_logs),
         "logs": "".join(tail_logs)
     }
@@ -849,7 +887,8 @@ async def api_update_profile(profile_id: int, payload: ProfileUpdatePayload, req
         check_interval_hours=final_interval,
         report_template_type=payload.report_template_type,
         custom_report_template=payload.custom_report_template,
-        auto_report_enabled=1 if payload.auto_report_enabled else 0
+        auto_report_enabled=1 if payload.auto_report_enabled else 0,
+        auto_scan_enabled=1 if payload.auto_scan_enabled else 0
     )
     
     # 2. Update keywords

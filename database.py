@@ -27,6 +27,7 @@ def init_db():
         gemini_api_key TEXT,
         discord_webhook_url TEXT,
         check_interval_hours INTEGER DEFAULT 24,
+        auto_scan_enabled INTEGER DEFAULT 1,
         auto_report_enabled INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -131,6 +132,8 @@ def init_db():
         cursor.execute("ALTER TABLE profiles ADD COLUMN report_template_type TEXT DEFAULT 'basic'")
     if 'custom_report_template' not in columns:
         cursor.execute("ALTER TABLE profiles ADD COLUMN custom_report_template TEXT DEFAULT ''")
+    if 'auto_scan_enabled' not in columns:
+        cursor.execute("ALTER TABLE profiles ADD COLUMN auto_scan_enabled INTEGER DEFAULT 1")
     if 'auto_report_enabled' not in columns:
         cursor.execute("ALTER TABLE profiles ADD COLUMN auto_report_enabled INTEGER DEFAULT 1")
     
@@ -421,13 +424,13 @@ def create_profile(name: str, gemini_api_key: str = "", discord_webhook_url: str
     finally:
         conn.close()
 
-def update_profile(profile_id: int, name: str, gemini_api_key: str, discord_webhook_url: str, check_interval_hours: int, report_template_type: str = 'basic', custom_report_template: str = '', auto_report_enabled: int = 1):
+def update_profile(profile_id: int, name: str, gemini_api_key: str, discord_webhook_url: str, check_interval_hours: int, report_template_type: str = 'basic', custom_report_template: str = '', auto_report_enabled: int = 1, auto_scan_enabled: int = 1):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "UPDATE profiles SET name = ?, gemini_api_key = ?, discord_webhook_url = ?, check_interval_hours = ?, report_template_type = ?, custom_report_template = ?, auto_report_enabled = ? WHERE id = ?",
-            (name, gemini_api_key, discord_webhook_url, check_interval_hours, report_template_type, custom_report_template, auto_report_enabled, profile_id)
+            "UPDATE profiles SET name = ?, gemini_api_key = ?, discord_webhook_url = ?, check_interval_hours = ?, report_template_type = ?, custom_report_template = ?, auto_report_enabled = ?, auto_scan_enabled = ? WHERE id = ?",
+            (name, gemini_api_key, discord_webhook_url, check_interval_hours, report_template_type, custom_report_template, auto_report_enabled, auto_scan_enabled, profile_id)
         )
         conn.commit()
     finally:

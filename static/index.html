@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260610-intro-guide-split">
+    <link rel="stylesheet" href="style.css?v=20260616-auto-scan-sidebar-ui">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -42,8 +42,19 @@
                         <span class="status-dot-pulse idle js-status-dot" id="sidebar-status-dot"></span>
                         <span id="sidebar-status-text" class="status-badge idle js-status-text">대기 중 (Idle)</span>
                     </div>
+                    <div class="auto-scan-info" id="auto-scan-info">
+                        <div class="auto-scan-head">
+                            <div>
+                                <strong>자동 수집</strong>
+                                <span id="auto-scan-state">확인 중</span>
+                            </div>
+                            <button id="sidebar-auto-scan-toggle" class="mini-toggle-btn" type="button">설정</button>
+                        </div>
+                        <div id="auto-scan-next">다음 예정 확인 중</div>
+                        <div id="auto-scan-latest">최근 수집 확인 중</div>
+                    </div>
                     <div class="scan-btn-group" style="margin-bottom: 8px;">
-                        <button id="start-scan-btn" class="btn success">▶️ 스캔 시작</button>
+                        <button id="start-scan-btn" class="btn success">▶️ 지금 수동 수집</button>
                         <button id="stop-process-btn" class="btn danger disabled" disabled>🛑 중단</button>
                     </div>
                     <button id="retry-summary-btn" class="btn primary" style="width: 100%; border-radius: 8px; font-size: 12px; padding: 8px 10px; font-weight: 500; cursor: pointer; text-align: center; border: none; transition: all var(--transition-speed);">🔄 요약 대기 재시도</button>
@@ -192,7 +203,7 @@
                 <div class="dashboard-charts-row">
                     <div class="chart-container-card">
                         <h3>인기 키워드 (수집 트렌드 빈도)</h3>
-                        <div class="chart-wrapper">
+                        <div class="chart-wrapper keyword-chart-wrapper">
                             <canvas id="keywordChart"></canvas>
                         </div>
                     </div>
@@ -238,7 +249,7 @@
                     <div class="empty-state" id="feed-empty" style="display: none;">
                         <span class="empty-icon">📂</span>
                         <h3>표시할 데이터가 없습니다</h3>
-                        <p>아직 수집된 정보가 없거나 검색 결과가 없습니다. 좌측 상단 [▶️ 스캔 시작]을 클릭해 보세요.</p>
+                        <p>아직 수집된 정보가 없거나 검색 결과가 없습니다. 자동 수집 예정 시간을 확인하거나, 좌측 상단 [▶️ 지금 수동 수집]으로 즉시 한 번 수집해 보세요.</p>
                     </div>
                     <div class="feed-columns-container" id="feed-items-grid">
                         <div class="feed-column" id="feed-col-competitor">
@@ -454,6 +465,19 @@
                             <div class="form-group">
                                 <label for="interval-input">자동 스캔 주기 (시간)</label>
                                 <input type="number" id="interval-input" value="24" min="1" max="720" disabled>
+                            </div>
+                            <div class="form-group">
+                                <label>자료 수집 방식</label>
+                                <label class="setting-toggle scan-mode-toggle">
+                                    <span class="toggle-copy">
+                                        <strong>주기별 자동 수집</strong>
+                                        <small>켜두면 서버가 실행 중일 때 설정한 주기마다 RSS와 키워드 뉴스를 자동으로 수집합니다. 끄면 좌측의 지금 수동 수집 버튼으로만 가져옵니다.</small>
+                                    </span>
+                                    <span class="toggle-switch-wrap">
+                                        <input type="checkbox" id="auto-scan-toggle" disabled>
+                                        <span class="toggle-ui" aria-hidden="true"></span>
+                                    </span>
+                                </label>
                             </div>
                             <div class="form-group">
                                 <label>보고서 생성 방식</label>
@@ -816,9 +840,9 @@
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Scan</span><h3>스캔 시작</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Manual</span><h3>지금 수동 수집</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>좌측 <strong>스캔 시작</strong>을 누르면 등록된 RSS 피드와 키워드 기준으로 새 소식을 수집합니다. 발행일과 수집일을 함께 보여주므로 오래된 글인지 새로 들어온 글인지 구분할 수 있습니다.</p>
+                                        <p>좌측 <strong>지금 수동 수집</strong>은 자동 주기를 기다리지 않고 즉시 한 번 수집하는 버튼입니다. 자동 수집은 서버가 켜져 있는 동안 설정된 주기에 맞춰 별도로 실행됩니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -1076,6 +1100,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260610-intro-guide-split"></script>
+    <script src="app.js?v=20260616-auto-scan-sidebar-ui"></script>
 </body>
 </html>
