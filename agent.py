@@ -661,9 +661,9 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                     except Exception as e:
                         print(f"[Apple Notes Error] Failed to write note: {e}")
                 
-                # Send Discord Notification
-                if webhook_url and is_recent and analysis.get("analysis_status") == "complete":
-                    discord_notifier.send_doc_update_alert(
+                # Send Discord Notification. Metadata-first scans still notify that a new item was collected.
+                if webhook_url and is_recent:
+                    sent = discord_notifier.send_doc_update_alert(
                         webhook_url,
                         name,
                         update['title'],
@@ -672,8 +672,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         update['link'],
                         format_source_date_for_note(update.get('date', ''))
                     )
-                elif webhook_url and analysis.get("analysis_status") == "pending":
-                    print("Skipping Discord doc alert because AI summary is pending.")
+                    print(f"[Discord] Doc alert {'sent' if sent else 'failed'}: {update['title']}")
                 elif webhook_url:
                     print(f"Skipping Discord doc alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {update.get('date', '')}")
         print(f"-> Logged {new_count} new updates for {name}.")
@@ -748,9 +747,9 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                     except Exception as e:
                         print(f"[Apple Notes Error] Failed to write note: {e}")
                 
-                # Send Discord Notification
-                if webhook_url and is_recent and analysis.get("analysis_status") == "complete":
-                    discord_notifier.send_trend_alert(
+                # Send Discord Notification. Metadata-first scans still notify that a new item was collected.
+                if webhook_url and is_recent:
+                    sent = discord_notifier.send_trend_alert(
                         webhook_url,
                         keyword,
                         analysis['title'],
@@ -759,8 +758,7 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         article['link'],
                         format_source_date_for_note(article.get('date', ''))
                     )
-                elif webhook_url and analysis.get("analysis_status") == "pending":
-                    print("Skipping Discord trend alert because AI summary is pending.")
+                    print(f"[Discord] Trend alert {'sent' if sent else 'failed'}: {analysis['title']}")
                 elif webhook_url:
                     print(f"Skipping Discord trend alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {article.get('date', '')}")
         print(f"-> Logged {new_count} new trend items for '{keyword}'.")
@@ -891,11 +889,12 @@ Please write a business summary in Korean."""
             
         # Send Discord notify
         if webhook_url:
-            discord_notifier.send_report_alert(
+            sent = discord_notifier.send_report_alert(
                 webhook_url,
                 f"[{profile_name}] {report_title}",
                 summary_text
             )
+            print(f"[Discord] Report alert {'sent' if sent else 'failed'}: {report_title}")
     else:
         print("Failed to save report to Database.")
 
