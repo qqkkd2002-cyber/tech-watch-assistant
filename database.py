@@ -122,6 +122,22 @@ def init_db():
         template_content TEXT NOT NULL
     )
     """)
+
+    # 9. Create editor_judgments table for TWT v2 editor mode
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS editor_judgments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL,
+        item_type TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+        UNIQUE(profile_id, item_type, item_id, label)
+    )
+    """)
     
     conn.commit()
     
@@ -1197,6 +1213,186 @@ def toggle_trend_star(trend_id: int, is_starred: int):
     cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, trend_id))
     conn.commit()
     conn.close()
+
+# --- TWT v2 EDITOR MODE FUNCTIONS ---
+
+EDITOR_LABELS = {
+    "important",
+    "report_candidate",
+    "watch_competitor",
+    "product_idea",
+    "rfp_evidence",
+    "noise",
+    "later",
+}
+
+def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "") -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    if label not in EDITOR_LABELS:
+        raise ValueError(f"Unsupported editor label: {label}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO editor_judgments (profile_id, item_type, item_id, label, note)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, item_type, item_id, label)
+            DO UPDATE SET note = excluded.note, updated_at = CURRENT_TIMESTAMP
+            """,
+            (profile_id, item_type, item_id, label, note)
+        )
+        conn.commit()
+        cursor.execute(
+            """
+            SELECT * FROM editor_judgments
+            WHERE profile_id = ? AND item_type = ? AND item_id = ? AND label = ?
+            """,
+            (profile_id, item_type, item_id, label)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = False) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 30), 100))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        noise_filter = "" if include_noise else "WHERE COALESCE(has_noise, 0) = 0"
+        cursor.execute(
+            f"""
+            WITH judgment_summary AS (
+                SELECT
+                    item_type,
+                    item_id,
+                    GROUP_CONCAT(label) AS labels,
+                    MAX(updated_at) AS last_judged_at,
+                    MAX(CASE WHEN label = 'noise' THEN 1 ELSE 0 END) AS has_noise,
+                    MAX(CASE WHEN label IN ('important', 'report_candidate', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 1 ELSE 0 END) AS has_positive
+                FROM editor_judgments
+                WHERE profile_id = ?
+                GROUP BY item_type, item_id
+            ),
+            candidates AS (
+                SELECT
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at,
+                    d.analysis_status,
+                    d.is_starred,
+                    COALESCE(js.labels, '') AS labels,
+                    COALESCE(js.has_noise, 0) AS has_noise,
+                    COALESCE(js.has_positive, 0) AS has_positive,
+                    (
+                        CASE WHEN d.is_starred = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN d.analysis_status = 'pending' THEN 12 ELSE 6 END +
+                        CASE WHEN d.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
+                        CASE WHEN d.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
+                        CASE WHEN COALESCE(js.has_positive, 0) = 1 THEN 25 ELSE 0 END
+                    ) AS editor_score
+                FROM scanned_docs d
+                LEFT JOIN judgment_summary js ON js.item_type = 'doc' AND js.item_id = d.id
+                WHERE d.profile_id = ?
+
+                UNION ALL
+
+                SELECT
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at,
+                    t.analysis_status,
+                    t.is_starred,
+                    COALESCE(js.labels, '') AS labels,
+                    COALESCE(js.has_noise, 0) AS has_noise,
+                    COALESCE(js.has_positive, 0) AS has_positive,
+                    (
+                        CASE WHEN t.is_starred = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN t.analysis_status = 'pending' THEN 12 ELSE 6 END +
+                        CASE WHEN t.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
+                        CASE WHEN t.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
+                        CASE WHEN COALESCE(js.has_positive, 0) = 1 THEN 25 ELSE 0 END
+                    ) AS editor_score
+                FROM scanned_trends t
+                LEFT JOIN judgment_summary js ON js.item_type = 'trend' AND js.item_id = t.id
+                WHERE t.profile_id = ?
+            )
+            SELECT * FROM candidates
+            {noise_filter}
+            ORDER BY editor_score DESC, created_at DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, profile_id, limit)
+        )
+        rows = cursor.fetchall()
+        queue = []
+        for row in rows:
+            item = dict(row)
+            item["labels"] = [label for label in (item.get("labels") or "").split(",") if label]
+            queue.append(item)
+        return queue
+    finally:
+        conn.close()
+
+def get_editor_learning_summary(profile_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT label, COUNT(*) AS count
+            FROM editor_judgments
+            WHERE profile_id = ?
+            GROUP BY label
+            ORDER BY count DESC, label ASC
+            """,
+            (profile_id,)
+        )
+        labels = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT item_type, COUNT(*) AS count
+            FROM editor_judgments
+            WHERE profile_id = ?
+            GROUP BY item_type
+            ORDER BY item_type ASC
+            """,
+            (profile_id,)
+        )
+        item_types = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT label, note, updated_at
+            FROM editor_judgments
+            WHERE profile_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 10
+            """,
+            (profile_id,)
+        )
+        recent = [dict(r) for r in cursor.fetchall()]
+        return {"labels": labels, "item_types": item_types, "recent": recent}
+    finally:
+        conn.close()
 
 def get_latest_collection_at(profile_id: int) -> Optional[str]:
     conn = get_db_connection()

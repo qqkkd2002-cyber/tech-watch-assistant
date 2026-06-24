@@ -92,6 +92,13 @@ class BoardPostPayload(BaseModel):
     title: str
     content: str
 
+class EditorJudgmentPayload(BaseModel):
+    profile_id: int
+    item_type: str
+    item_id: int
+    label: str
+    note: str = ""
+
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
     seed_keyword: str = ""
@@ -945,6 +952,31 @@ async def api_toggle_trend_star(trend_id: int, is_starred: bool):
     """Toggles star bookmark status for a tech trend news item."""
     database.toggle_trend_star(trend_id, 1 if is_starred else 0)
     return {"message": "Trend star status updated successfully."}
+
+@app.get("/api/editor/queue")
+async def api_get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = False):
+    """Returns TWT v2 editor-mode candidates for quick judgment."""
+    return database.get_editor_queue(profile_id=profile_id, limit=limit, include_noise=include_noise)
+
+@app.get("/api/editor/learning")
+async def api_get_editor_learning(profile_id: int):
+    """Returns a simple summary of the user's accumulated editorial judgments."""
+    return database.get_editor_learning_summary(profile_id=profile_id)
+
+@app.post("/api/editor/judgments")
+async def api_save_editor_judgment(payload: EditorJudgmentPayload):
+    """Stores one editor judgment label for a collected item."""
+    try:
+        judgment = database.save_editor_judgment(
+            profile_id=payload.profile_id,
+            item_type=payload.item_type,
+            item_id=payload.item_id,
+            label=payload.label,
+            note=payload.note
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "judgment": judgment}
 
 @app.post("/api/summary/{item_type}/{item_id}")
 async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
