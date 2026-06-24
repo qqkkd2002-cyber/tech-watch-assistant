@@ -1,176 +1,271 @@
-# TWT v2 - Editor Mode
+# TWT v2 - AI Editorial Intelligence
 
 ## One-Line Concept
 
-Tech Watch Tracker v2 turns the app from a collection dashboard into an editorial research assistant.
+Tech Watch Tracker v2 is not a mode.
 
-The user is the editor-in-chief. The app is a junior researcher that collects signals, recommends candidates, explains why they may matter, and learns from the user's judgment over time.
+It is the app's upgraded operating model:
 
-## Why v2 Exists
+1. The app continuously collects technology and competitor signals.
+2. AI prepares a first editorial draft by grouping collected items into insight candidates.
+3. The user acts as editor-in-chief, approving, correcting, or rejecting those candidates.
+4. The app learns from those decisions and improves future dashboards, alerts, and reports.
 
-v1 collects many articles, release notes, and trend signals. It can also generate weekly and monthly reports.
+## Product Positioning
 
-The remaining burden is editorial judgment:
+v1 is a collection and reporting assistant.
 
-- Which items are actually important?
-- Which items are only keyword noise?
-- Which items should become report evidence?
-- Which items matter for competitors, product strategy, RFPs, or financial IT strategy?
-- How can the app learn the user's taste and strategy lens?
+v2 should become an editorial intelligence assistant.
 
-v2 should reduce manual triage. The user should review a short list of AI-ranked candidates instead of scanning hundreds of collected items.
+The user should not manually inspect every feed card. That recreates the old research burden. Instead, AI should first organize the collected volume into a short editorial agenda.
 
-## Product Principle
+The user's role is not "tag every article."
 
-Do not try to fully automate insight.
+The user's role is:
 
-Instead:
+- approve good candidates
+- move items to the right bucket
+- reject noise
+- mark what must influence reports
+- teach the assistant what "important" means for this team
 
-1. The app collects continuously.
-2. AI ranks and explains likely insight candidates.
-3. The user makes quick editorial judgments.
-4. The app stores those judgments.
-5. Future recommendations and reports use the accumulated judgment pattern.
+## Core Product Flow
 
-## Core Vocabulary
+```text
+Raw collection
+↓
+AI first editorial classification
+↓
+Insight candidate buckets
+↓
+User approval / correction / rejection
+↓
+Learning signal
+↓
+Better prioritization, reports, and alerts
+```
 
-- **Collected Item**: A raw competitor update, reference, or news trend item.
-- **Insight Candidate**: A collected item that AI thinks may deserve attention.
-- **Editorial Judgment**: The user's decision about an item.
-- **Learning Signal**: A stored judgment that improves future ranking and reports.
-- **Editor Mode**: The v2 workspace where the user reviews and trains the assistant.
+## Main Screen Direction
 
-## Editorial Judgment Labels
+The v2 entry point should be a dashboard-level section, not a separate optional feature.
 
-Initial labels:
+Recommended user-facing name:
 
-- `important`: Important signal
-- `report_candidate`: Include in strategy report candidates
-- `watch_competitor`: Competitor movement to watch
-- `product_idea`: Product or solution idea
-- `rfp_evidence`: Useful as proposal/RFP evidence
-- `noise`: Not useful / keyword noise
-- `later`: Save for later review
+**인사이트 후보**
 
-An item can have multiple positive labels, but `noise` should act as a negative judgment.
+This section should appear near the top of the dashboard and show what AI thinks deserves editorial attention.
 
-## MVP Scope
+Example:
 
-### MVP 1 - Editorial Judgment Storage
+```text
+인사이트 후보
 
-Add database support for saving user judgments on collected docs and trends.
+[전략 보고서 후보 6]
+[경쟁사 주시 후보 4]
+[제품/솔루션 아이디어 후보 3]
+[제안/RFP 근거 후보 5]
+[노이즈 가능성 높음 18]
+```
 
-Minimum fields:
-
-- item type: `doc` or `trend`
-- item id
-- profile id
-- judgment label
-- optional note
-- created at
-
-### MVP 2 - Editor Queue
-
-Add an API that returns candidate items for review.
-
-First version can use simple scoring:
-
-- pending or recent items first
-- starred items higher
-- recent collected date higher
-- items with high-value keywords higher
-- items already marked `noise` lower or excluded
-
-### MVP 3 - Editor Mode UI
-
-Add a new sidebar tab: `편집장 모드`.
-
-Show cards with:
+Each bucket contains cards with:
 
 - title
-- source/company/keyword
+- source / competitor / keyword
 - published date and collected date
-- current summary or "AI 요약 대기"
-- why this may matter
-- quick judgment buttons
+- current AI summary status
+- why AI placed it in this bucket
+- confidence or score
+- quick editor actions
 
-Buttons:
+## AI First Editorial Buckets
 
-- 중요
-- 보고서 후보
-- 경쟁사 주시
-- 제품 아이디어
-- 제안/RFP 근거
-- 나중에
-- 노이즈
+Initial buckets:
 
-### MVP 4 - Pattern Summary
+- `strategy_report`: 전략 보고서 후보
+- `watch_competitor`: 경쟁사 주시 후보
+- `product_idea`: 제품/솔루션 아이디어 후보
+- `rfp_evidence`: 제안/RFP 근거 후보
+- `important_signal`: 중요 신호 후보
+- `check_only`: 확인만 필요
+- `likely_noise`: 노이즈 가능성 높음
 
-Show a simple "What the assistant learned" panel:
+AI can assign one primary bucket and optional secondary buckets.
 
-- topics frequently marked important
-- sources frequently marked noise
-- keywords often promoted to report candidates
-- recent themes gaining user interest
+## AI Review Fields
 
-### MVP 5 - Report Integration
+The system should store AI's first editorial judgment separately from the user's final judgment.
 
-Reports should prioritize items marked:
+Proposed table:
 
-- `report_candidate`
+```text
+ai_editor_reviews
+- id
+- profile_id
+- item_type: doc | trend
+- item_id
+- primary_bucket
+- secondary_buckets
+- score
+- confidence
+- reason
+- related_theme
+- created_at
+- updated_at
+```
+
+This is the assistant's first draft.
+
+The existing `editor_judgments` table remains useful as the user's correction and learning signal.
+
+## User Editorial Actions
+
+The user should mainly review AI buckets, not raw feed cards.
+
+Initial actions:
+
+- `approve`: AI classification is correct
+- `move_to_strategy_report`
+- `move_to_watch_competitor`
+- `move_to_product_idea`
+- `move_to_rfp_evidence`
+- `mark_important`
+- `mark_later`
+- `mark_noise`
+
+Shortcut labels can still map to existing internal labels:
+
 - `important`
+- `report_candidate`
 - `watch_competitor`
+- `product_idea`
 - `rfp_evidence`
+- `later`
+- `noise`
 
-Noise items should be excluded unless explicitly searched.
+## How This Differs From v1 Starred Items
 
-## Future Direction
+Starred items are manual bookmarks.
 
-### AI Ranking
+v2 editorial intelligence is a feedback loop:
 
-Later, each item can receive AI-generated fields:
+- AI recommends
+- user corrects
+- app learns
+- reports prioritize approved signals
+- noise is suppressed over time
 
-- insight score: 0-100
-- strategic relevance
-- financial IT relevance
-- competitor impact
-- product implication
-- noise likelihood
-- recommendation reason
+The star/archive behavior should remain, but it should no longer be the main way to create insight.
 
-### Feedback-Based Learning
+## MVP Roadmap
 
-Use accumulated judgments to adjust ranking:
+### MVP 1 - Keep The Current Foundation
 
-- keywords often marked important get a score boost
-- sources often marked noise get a penalty
-- topics often promoted to reports are shown earlier
-- competitor/product signals are separated from generic news
+Already started:
 
-### Editorial Briefing
+- `editor_judgments` table
+- `/api/editor/queue`
+- `/api/editor/learning`
+- `/api/editor/judgments`
 
-Daily or weekly AI brief:
+This stores user decisions and can support the learning layer.
 
-- must-read signals
-- report candidates
-- weak but emerging signals
-- likely noise
-- what changed compared with last week
+### MVP 2 - Add AI Editorial Review Storage
 
-## Non-Goals For The First v2 Slice
+Add `ai_editor_reviews`.
 
-- Do not replace the current feed pages.
-- Do not automatically resend old Discord alerts.
-- Do not require perfect AI scoring before shipping.
-- Do not remove star/archive behavior.
-- Do not make the user read every collected article.
+This stores AI's first classification:
 
-## Success Criteria
+- bucket
+- score
+- reason
+- theme
+- confidence
+
+### MVP 3 - Generate AI Editorial Reviews
+
+Create a lightweight background task or manual button:
+
+**AI 후보 분류**
+
+It should classify recent or pending items into buckets.
+
+The first version can process:
+
+- latest 30 docs
+- latest 50 trends
+- items without an existing AI editorial review
+
+### MVP 4 - Dashboard Insight Candidates
+
+Add an `인사이트 후보` section on the dashboard.
+
+It should group reviewed items by AI bucket and show the strongest candidates first.
+
+The user can approve or correct from this section.
+
+### MVP 5 - Reports Use Approved Signals
+
+Weekly/monthly reports should prioritize:
+
+- approved `strategy_report`
+- approved `important_signal`
+- `report_candidate`
+- `rfp_evidence`
+- `watch_competitor`
+
+Noise should be excluded unless explicitly searched.
+
+### MVP 6 - Learning Summary
+
+Show what the assistant learned:
+
+- topics often approved
+- topics often marked noise
+- sources often demoted
+- candidate buckets with high approval rates
+- themes gaining user interest
+
+## Scoring And Learning Direction
+
+Simple first version:
+
+- AI bucket score ranks the candidate.
+- User approval strengthens similar future candidates.
+- `noise` weakens similar future candidates.
+- `report_candidate` and `rfp_evidence` are boosted in reports.
+- Repeated themes across multiple items get surfaced as higher-level signals.
+
+No heavy machine learning is required at first.
+
+Rules plus stored feedback are enough for the first v2 slice.
+
+## Desired User Feeling
 
 The user should feel:
 
-- "I am approving and shaping insight, not manually searching."
-- "The app is learning what I care about."
-- "Reports reflect my editorial judgment, not only raw collection volume."
-- "I can quickly mark noise and make the assistant less noisy next time."
+- "The app brings me an editorial agenda."
+- "I do not have to inspect every article."
+- "I can quickly approve, correct, or reject AI's draft."
+- "The assistant is learning my strategy lens."
+- "Reports are based on what mattered, not only what was collected."
+
+## Important Product Decision
+
+Do not build v2 as a separate hidden tab first.
+
+Build it as a core improvement to the dashboard:
+
+```text
+Dashboard
+└── 인사이트 후보
+    ├── 전략 보고서 후보
+    ├── 경쟁사 주시 후보
+    ├── 제품/솔루션 아이디어 후보
+    ├── 제안/RFP 근거 후보
+    └── 노이즈 가능성 높음
+```
+
+The current feed pages remain useful as raw evidence and search surfaces.
+
+But the user's daily workflow should start with AI-organized insight candidates.
 
