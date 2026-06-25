@@ -16,6 +16,7 @@ let lastRenderedLogText = "";
 let competitorChartInstance = null;
 let keywordChartInstance = null;
 let tagChartInstance = null;
+let latestInsightCandidateData = null;
 const FEED_FETCH_LIMIT = 40;
 const FEED_RENDER_LIMIT = 80;
 
@@ -294,6 +295,7 @@ const DOM = {
     statTopKeyword: document.getElementById("stat-top-keyword"),
     statStarredSignals: document.getElementById("stat-starred-signals"),
     generateInsightCandidatesBtn: document.getElementById("generate-insight-candidates-btn"),
+    summarizeReviewQueueBtn: document.getElementById("summarize-review-queue-btn"),
     insightCandidateStatus: document.getElementById("insight-candidate-status"),
     insightCandidateBuckets: document.getElementById("insight-candidate-buckets"),
     retrySummaryBtn: document.getElementById("retry-summary-btn"),
@@ -397,6 +399,9 @@ function setupEventListeners() {
     }
     if (DOM.generateInsightCandidatesBtn) {
         DOM.generateInsightCandidatesBtn.addEventListener("click", handleGenerateInsightCandidates);
+    }
+    if (DOM.summarizeReviewQueueBtn) {
+        DOM.summarizeReviewQueueBtn.addEventListener("click", handleSummarizeReviewQueue);
     }
     
     // Delete Profile
@@ -2962,6 +2967,7 @@ async function loadInsightCandidates() {
         const res = await fetch(`/api/editor/insights?profile_id=${currentProfileId}&limit_per_bucket=4&include_noise=true`);
         if (!res.ok) throw new Error("인사이트 후보를 불러오지 못했습니다.");
         const data = await res.json();
+        latestInsightCandidateData = data;
         renderInsightCandidates(data);
     } catch (e) {
         if (DOM.insightCandidateStatus) {
@@ -2996,6 +3002,9 @@ function renderInsightCandidates(data) {
     DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightJudgment(btn));
     });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightSummary(btn));
+    });
     setupInsightDragAndDrop();
 }
 
@@ -3007,6 +3016,17 @@ function renderInsightCard(item) {
     const tags = parseInsightTags(item.suggested_tags || item.secondary_buckets);
     const tagHtml = tags.length
         ? `<div class="insight-card-tags">${tags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
+        : "";
+    const isSummaryPending = item.analysis_status === "pending";
+    const summaryText = getInsightSummaryText(item);
+    const summaryHtml = `
+        <div class="insight-card-summary ${isSummaryPending ? "is-pending" : ""}">
+            <div class="insight-card-summary-label">${isSummaryPending ? "수집 원문" : "AI 요약"}</div>
+            <p>${escapeHtml(summaryText || "요약 내용이 아직 없습니다.")}</p>
+        </div>
+    `;
+    const summaryActionHtml = isSummaryPending
+        ? `<button class="insight-summary-btn" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">AI 요약 생성</button>`
         : "";
     return `
         <article class="insight-card" draggable="true" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
@@ -3021,14 +3041,110 @@ function renderInsightCard(item) {
                 <span>점수 ${Number(item.score || 0)}</span>
                 <span>확신도 ${Number(item.confidence || 0)}</span>
             </div>
+            ${summaryHtml}
             <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
             <div class="insight-card-actions">
+                ${summaryActionHtml}
                 <button class="insight-action-btn positive" data-move-bucket="insight" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">인사이트</button>
                 <button class="insight-action-btn" data-move-bucket="review_queue" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">보류</button>
                 <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
             </div>
         </article>
     `;
+}
+
+function getInsightSummaryText(item) {
+    const raw = item.summary || "";
+    const withoutHtml = raw
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return withoutHtml || raw;
+}
+
+async function summarizeInsightItem(itemType, itemId) {
+    if (!currentProfileId || !itemType || !itemId) {
+        throw new Error("요약할 항목 정보가 부족합니다.");
+    }
+    const res = await fetch(`/api/summary/${itemType}/${itemId}?profile_id=${currentProfileId}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.detail || "AI 요약 생성에 실패했습니다.");
+    }
+    return data;
+}
+
+async function handleInsightSummary(btn) {
+    const itemType = btn.getAttribute("data-item-type");
+    const itemId = Number(btn.getAttribute("data-item-id"));
+    const originalText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = "요약 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "선택한 후보의 AI 요약을 생성하고 있습니다.";
+    }
+
+    try {
+        await summarizeInsightItem(itemType, itemId);
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "AI 요약이 생성되었습니다. 카드 내용을 다시 불러옵니다.";
+        }
+        await loadInsightCandidates();
+        await loadDashboardStats();
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `AI 요약 생성 실패: ${e.message}`;
+        }
+    }
+}
+
+async function handleSummarizeReviewQueue() {
+    if (!currentProfileId || !DOM.summarizeReviewQueueBtn) return;
+    const reviewQueue = (latestInsightCandidateData?.buckets || []).find(bucket => bucket.bucket === "review_queue");
+    const pendingItems = (reviewQueue?.items || [])
+        .filter(item => item.analysis_status === "pending")
+        .slice(0, 5);
+
+    if (!pendingItems.length) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "검토 대기 안에 AI 요약 대기 항목이 없습니다.";
+        }
+        return;
+    }
+
+    const btn = DOM.summarizeReviewQueueBtn;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+
+    let successCount = 0;
+    try {
+        for (let i = 0; i < pendingItems.length; i += 1) {
+            const item = pendingItems[i];
+            btn.textContent = `요약 중 ${i + 1}/${pendingItems.length}`;
+            if (DOM.insightCandidateStatus) {
+                DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${i + 1}/${pendingItems.length}개째 AI 요약을 생성하고 있습니다.`;
+            }
+            await summarizeInsightItem(item.item_type, item.item_id);
+            successCount += 1;
+        }
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${successCount}개 요약을 생성했습니다.`;
+        }
+        await loadInsightCandidates();
+        await loadDashboardStats();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `검토 대기 일괄 요약 중단: ${successCount}개 완료, 오류: ${e.message}`;
+        }
+        await loadInsightCandidates();
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
 }
 
 function parseInsightTags(rawTags) {

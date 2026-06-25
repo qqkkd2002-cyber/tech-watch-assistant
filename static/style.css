@@ -3077,6 +3077,23 @@ body {
     margin-bottom: 16px;
 }
 
+.insight-panel-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.insight-panel-actions .glass-btn {
+    white-space: nowrap;
+}
+
+.insight-panel-actions .glass-btn.subtle {
+    border-color: rgba(148, 163, 184, 0.2);
+    background: rgba(148, 163, 184, 0.08);
+    color: #cbd5e1;
+}
+
 .insight-panel-header h3 {
     font-family: var(--font-outfit);
     font-size: 18px;
@@ -3214,6 +3231,37 @@ body {
     padding: 2px 6px;
 }
 
+.insight-card-summary {
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.026);
+    padding: 9px 10px;
+    margin-bottom: 10px;
+}
+
+.insight-card-summary.is-pending {
+    border-color: rgba(245, 158, 11, 0.18);
+    background: rgba(245, 158, 11, 0.045);
+}
+
+.insight-card-summary-label {
+    color: var(--text-help);
+    font-size: 10px;
+    font-weight: 800;
+    margin-bottom: 4px;
+}
+
+.insight-card-summary p {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.55;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
 .insight-card-reason {
     color: var(--text-muted);
     font-size: 11px;
@@ -3236,6 +3284,24 @@ body {
     font-weight: 700;
     padding: 5px 8px;
     cursor: pointer;
+}
+
+.insight-summary-btn {
+    border: 1px solid rgba(0, 242, 254, 0.24);
+    border-radius: 999px;
+    background: rgba(0, 242, 254, 0.08);
+    color: var(--color-accent);
+    font-size: 10px;
+    font-weight: 800;
+    padding: 5px 8px;
+    cursor: pointer;
+}
+
+.insight-summary-btn:disabled,
+.insight-action-btn:disabled,
+.insight-panel-actions .glass-btn:disabled {
+    opacity: 0.58;
+    cursor: wait;
 }
 
 .insight-action-btn:hover {
@@ -3303,6 +3369,15 @@ body {
 
     .insight-panel-header {
         flex-direction: column;
+    }
+
+    .insight-panel-actions {
+        width: 100%;
+        justify-content: stretch;
+    }
+
+    .insight-panel-actions .glass-btn {
+        flex: 1 1 150px;
     }
 
     .insight-candidate-buckets {

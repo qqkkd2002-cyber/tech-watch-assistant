@@ -71,6 +71,8 @@ Each bucket contains cards with:
 - source / competitor / keyword
 - published date and collected date
 - current AI summary status
+- inline AI summary or collected source snippet
+- selected/manual AI summary action for pending cards
 - why AI placed it in this stage
 - suggested tags such as 보고서, 경쟁사, 제품 아이디어, RFP/제안 근거
 - confidence or score
@@ -260,6 +262,8 @@ Add an `인사이트 후보` section on the dashboard.
 It should group reviewed items by AI bucket and show the strongest candidates first.
 
 The user can approve or correct from this section.
+
+Pending cards should support selected AI summarization directly inside this section so the user can judge without opening every source article.
 
 For the first usable version, the dashboard groups into three stages:
 
