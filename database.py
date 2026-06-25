@@ -150,6 +150,7 @@ def init_db():
         item_id INTEGER NOT NULL,
         primary_bucket TEXT NOT NULL,
         secondary_buckets TEXT DEFAULT '',
+        suggested_tags TEXT DEFAULT '',
         score INTEGER DEFAULT 0,
         confidence INTEGER DEFAULT 0,
         reason TEXT DEFAULT '',
@@ -187,6 +188,34 @@ def init_db():
     judgment_cols = [row['name'] for row in cursor.fetchall()]
     if 'ai_review_id' not in judgment_cols:
         cursor.execute("ALTER TABLE editor_judgments ADD COLUMN ai_review_id INTEGER")
+
+    # TWT v2.1: the dashboard uses 3 editorial columns; legacy five-bucket
+    # reviews are kept as card tags so existing learning data is not lost.
+    cursor.execute("PRAGMA table_info(ai_editor_reviews)")
+    ai_review_cols = [row['name'] for row in cursor.fetchall()]
+    if 'suggested_tags' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN suggested_tags TEXT DEFAULT ''")
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET suggested_tags = CASE primary_bucket
+            WHEN 'strategy_report' THEN 'report'
+            WHEN 'watch_competitor' THEN 'competitor'
+            WHEN 'product_idea' THEN 'product_idea'
+            WHEN 'rfp_evidence' THEN 'rfp_evidence'
+            ELSE suggested_tags
+        END
+        WHERE COALESCE(suggested_tags, '') = ''
+          AND primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence')
+    """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET primary_bucket = CASE
+            WHEN primary_bucket = 'likely_noise' THEN 'noise'
+            WHEN primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 'review_queue'
+            ELSE primary_bucket
+        END
+        WHERE primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence', 'likely_noise')
+    """)
     
     # Alter scanned_docs table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_docs)")
@@ -1262,19 +1291,24 @@ EDITOR_LABELS = {
 }
 
 EDITOR_BUCKETS = {
-    "strategy_report",
-    "watch_competitor",
-    "product_idea",
-    "rfp_evidence",
-    "likely_noise",
+    "review_queue",
+    "insight",
+    "noise",
 }
 
 BUCKET_LABELS = {
-    "strategy_report": "전략 보고서 후보",
-    "watch_competitor": "경쟁사 주시 후보",
-    "product_idea": "제품/솔루션 아이디어 후보",
-    "rfp_evidence": "제안/RFP 근거 후보",
-    "likely_noise": "노이즈 가능성 높음",
+    "review_queue": "검토 대기",
+    "insight": "인사이트",
+    "noise": "노이즈",
+}
+
+SUGGESTED_TAG_LABELS = {
+    "report": "보고서",
+    "competitor": "경쟁사",
+    "product_idea": "제품 아이디어",
+    "rfp_evidence": "RFP/제안 근거",
+    "regulation": "규제/시장 신호",
+    "technical_reference": "기술 레퍼런스",
 }
 
 def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "", ai_review_id: Optional[int] = None) -> Dict[str, Any]:
@@ -1315,37 +1349,48 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     summary = (item.get("summary") or "").lower()
     haystack = " ".join([title, category, source_name, summary])
 
-    bucket = "strategy_report"
-    score = 52
-    confidence = 58
+    bucket = "review_queue"
+    score = 55
+    confidence = 56
     theme = item.get("category") or item.get("source_name") or "기술 신호"
-    reason = "최근 수집된 항목으로 전략 검토 후보에 올렸습니다."
+    tags = []
+    reason = "최근 수집된 항목 중 편집장 검토가 필요한 후보로 올렸습니다."
 
     noise_terms = ["backstage", "concert", "golf", "travel", "sortir", "연예", "공연", "카르네발", "재생에너지 투자"]
     rfp_terms = ["금융", "은행", "증권", "보험", "망분리", "보안", "규제", "거버넌스", "ai보안", "차세대", "코어뱅킹"]
     product_terms = ["developer experience", "개발자 생산성", "platform engineering", "플랫폼 엔지니어링", "idp", "devops", "devsecops", "gitops", "llmops", "rag"]
     competitor_terms = ["github", "gitlab", "atlassian", "jira", "azure devops", "harness", "copilot"]
+    report_terms = ["전략", "시장", "트렌드", "전망", "도입", "확산", "가이드라인", "보고서"]
 
     if any(term in haystack for term in noise_terms):
-        bucket = "likely_noise"
+        bucket = "noise"
         score = 35
         confidence = 62
         reason = "등록 키워드와는 맞지만 기술/경쟁사 전략과 직접 관련이 낮아 보입니다."
-    elif any(term in haystack for term in rfp_terms):
-        bucket = "rfp_evidence"
-        score = 78
-        confidence = 72
-        reason = "금융권, 보안, 규제, 차세대 키워드와 연결되어 제안/RFP 근거 후보로 볼 수 있습니다."
-    elif any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
-        bucket = "watch_competitor"
-        score = 72
-        confidence = 70
-        reason = "경쟁사 또는 개발 플랫폼 변화와 연결되어 추적 후보로 볼 수 있습니다."
-    elif any(term in haystack for term in product_terms):
-        bucket = "product_idea"
-        score = 68
-        confidence = 66
-        reason = "제품/솔루션 기획에 참고할 수 있는 기술 운영 패턴으로 보입니다."
+    else:
+        if any(term in haystack for term in rfp_terms):
+            tags.append("rfp_evidence")
+            if "규제" in haystack or "가이드라인" in haystack:
+                tags.append("regulation")
+            score = max(score, 70)
+            confidence = max(confidence, 64)
+        if any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
+            tags.append("competitor")
+            score = max(score, 66)
+            confidence = max(confidence, 63)
+        if any(term in haystack for term in product_terms):
+            tags.append("product_idea")
+            score = max(score, 64)
+            confidence = max(confidence, 61)
+        if any(term in haystack for term in report_terms):
+            tags.append("report")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
+        if not tags:
+            tags.append("technical_reference")
+
+        tag_names = [SUGGESTED_TAG_LABELS.get(tag, tag) for tag in tags]
+        reason = f"AI가 바로 확정하지 않고 검토 대기 후보로 올렸습니다. 참고 태그: {', '.join(tag_names)}."
 
     if int(item.get("is_starred") or 0) == 1:
         score += 12
@@ -1358,7 +1403,8 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     confidence = max(0, min(confidence, 100))
     return {
         "primary_bucket": bucket,
-        "secondary_buckets": "",
+        "secondary_buckets": ",".join(tags),
+        "suggested_tags": ",".join(tags),
         "score": score,
         "confidence": confidence,
         "reason": reason,
@@ -1370,7 +1416,7 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
 def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
     if item_type not in ("doc", "trend"):
         raise ValueError("item_type must be 'doc' or 'trend'")
-    bucket = review.get("primary_bucket") or "strategy_report"
+    bucket = review.get("primary_bucket") or "review_queue"
     if bucket not in EDITOR_BUCKETS:
         raise ValueError(f"Unsupported editor bucket: {bucket}")
 
@@ -1388,10 +1434,10 @@ def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review:
         cursor.execute(
             """
             INSERT INTO ai_editor_reviews (
-                profile_id, item_type, item_id, primary_bucket, secondary_buckets,
+                profile_id, item_type, item_id, primary_bucket, secondary_buckets, suggested_tags,
                 score, confidence, reason, related_theme, model_name, prompt_version, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 profile_id,
@@ -1399,6 +1445,7 @@ def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review:
                 item_id,
                 bucket,
                 review.get("secondary_buckets", ""),
+                review.get("suggested_tags", review.get("secondary_buckets", "")),
                 int(review.get("score") or 0),
                 int(review.get("confidence") or 0),
                 review.get("reason", ""),
@@ -1534,7 +1581,7 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        noise_filter = "" if include_noise else "AND ar.primary_bucket != 'likely_noise'"
+        noise_filter = "" if include_noise else "AND ar.primary_bucket != 'noise'"
         cursor.execute(
             f"""
             WITH active_reviews AS (
@@ -1587,11 +1634,9 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
             WHERE bucket_rank <= ?
             ORDER BY
                 CASE primary_bucket
-                    WHEN 'strategy_report' THEN 1
-                    WHEN 'watch_competitor' THEN 2
-                    WHEN 'product_idea' THEN 3
-                    WHEN 'rfp_evidence' THEN 4
-                    WHEN 'likely_noise' THEN 5
+                    WHEN 'review_queue' THEN 1
+                    WHEN 'insight' THEN 2
+                    WHEN 'noise' THEN 3
                     ELSE 9
                 END,
                 score DESC,
@@ -1601,7 +1646,7 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
         )
         rows = [dict(r) for r in cursor.fetchall()]
         buckets = []
-        for bucket in ["strategy_report", "watch_competitor", "product_idea", "rfp_evidence", "likely_noise"]:
+        for bucket in ["review_queue", "insight", "noise"]:
             items = [r for r in rows if r.get("primary_bucket") == bucket]
             buckets.append({
                 "bucket": bucket,

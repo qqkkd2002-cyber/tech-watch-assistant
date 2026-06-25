@@ -3099,7 +3099,7 @@ body {
 
 .insight-candidate-buckets {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
     gap: 14px;
 }
 
@@ -3180,6 +3180,23 @@ body {
     color: var(--color-accent);
 }
 
+.insight-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.insight-card-tags span {
+    border: 1px solid rgba(0, 242, 254, 0.18);
+    border-radius: 999px;
+    background: rgba(0, 242, 254, 0.06);
+    color: var(--color-accent);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+}
+
 .insight-card-meta,
 .insight-card-score {
     display: flex;
@@ -3224,6 +3241,12 @@ body {
 .insight-action-btn:hover {
     border-color: rgba(0, 242, 254, 0.42);
     color: var(--color-accent);
+}
+
+.insight-action-btn.positive {
+    color: #a7f3d0;
+    border-color: rgba(16, 185, 129, 0.28);
+    background: rgba(16, 185, 129, 0.08);
 }
 
 .insight-action-btn.noise {
@@ -3280,6 +3303,10 @@ body {
 
     .insight-panel-header {
         flex-direction: column;
+    }
+
+    .insight-candidate-buckets {
+        grid-template-columns: 1fr;
     }
 }
 

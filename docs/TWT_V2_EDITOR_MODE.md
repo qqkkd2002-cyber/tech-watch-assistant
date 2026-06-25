@@ -60,11 +60,9 @@ Example:
 ```text
 인사이트 후보
 
-[전략 보고서 후보 6]
-[경쟁사 주시 후보 4]
-[제품/솔루션 아이디어 후보 3]
-[제안/RFP 근거 후보 5]
-[노이즈 가능성 높음 18]
+[검토 대기 12]
+[인사이트 4]
+[노이즈 18]
 ```
 
 Each bucket contains cards with:
@@ -73,23 +71,29 @@ Each bucket contains cards with:
 - source / competitor / keyword
 - published date and collected date
 - current AI summary status
-- why AI placed it in this bucket
+- why AI placed it in this stage
+- suggested tags such as 보고서, 경쟁사, 제품 아이디어, RFP/제안 근거
 - confidence or score
 - quick editor actions
 
 ## AI First Editorial Buckets
 
-Initial buckets:
+Primary dashboard buckets should stay intentionally simple:
 
-- `strategy_report`: 전략 보고서 후보
-- `watch_competitor`: 경쟁사 주시 후보
-- `product_idea`: 제품/솔루션 아이디어 후보
-- `rfp_evidence`: 제안/RFP 근거 후보
-- `likely_noise`: 노이즈 가능성 높음
+- `review_queue`: 검토 대기
+- `insight`: 인사이트
+- `noise`: 노이즈
 
-Keep the first MVP to these five buckets. More buckets can be added after the approval/noise data shows where the extra distinction is actually useful.
+Detailed usage categories should be tags, not board columns:
 
-AI can assign one primary bucket and optional secondary buckets, but the dashboard should group by the primary bucket.
+- `report`: 보고서
+- `competitor`: 경쟁사
+- `product_idea`: 제품 아이디어
+- `rfp_evidence`: RFP/제안 근거
+- `regulation`: 규제/시장 신호
+- `technical_reference`: 기술 레퍼런스
+
+This keeps the user's daily decision simple: hold, promote, or reject. The richer meaning remains visible on the card as tags.
 
 ## AI Review Fields
 
@@ -105,6 +109,7 @@ ai_editor_reviews
 - item_id
 - primary_bucket
 - secondary_buckets
+- suggested_tags
 - score
 - confidence
 - reason
@@ -130,7 +135,7 @@ Why nullable:
 This optional link allows accuracy analysis:
 
 ```text
-AI said: strategy_report
+AI said: review_queue + tag rfp_evidence
 User said: noise
 ```
 
@@ -166,7 +171,7 @@ Initial rules:
 
 - `score >= 70`: show as primary candidate
 - `score 40-69`: show below the strongest candidates
-- `score < 40`: hide from main candidate view unless it is `likely_noise`
+- `score < 40`: keep in noise unless the user explicitly searches or opens noise
 - low confidence candidates should be shown lower, even if the bucket is interesting
 
 This prevents the dashboard from feeling like a random list.
@@ -177,14 +182,10 @@ The user should mainly review AI buckets, not raw feed cards.
 
 Initial actions:
 
-- `approve`: AI classification is correct
-- `move_to_strategy_report`
-- `move_to_watch_competitor`
-- `move_to_product_idea`
-- `move_to_rfp_evidence`
-- `mark_important`
+- `move_to_insight`
 - `mark_later`
 - `mark_noise`
+- drag between 검토 대기, 인사이트, 노이즈
 
 Shortcut labels can still map to existing internal labels:
 
@@ -260,16 +261,24 @@ It should group reviewed items by AI bucket and show the strongest candidates fi
 
 The user can approve or correct from this section.
 
+For the first usable version, the dashboard groups into three stages:
+
+- 검토 대기
+- 인사이트
+- 노이즈
+
+Specific intent such as 보고서, 경쟁사, 제품 아이디어, or RFP/제안 근거 appears as card tags.
+
 ### MVP 5 - Reports Use Approved Signals
 
 Defer report integration until the candidate flow is tested with real use.
 
 Weekly/monthly reports should prioritize:
 
-- approved `strategy_report`
-- `report_candidate`
-- `rfp_evidence`
-- `watch_competitor`
+- cards moved to `insight`
+- approved `report_candidate`
+- cards tagged `rfp_evidence`
+- cards tagged `competitor`
 
 Noise should be excluded unless explicitly searched.
 
@@ -292,7 +301,7 @@ Simple first version:
 - AI bucket score ranks the candidate.
 - User approval strengthens similar future candidates.
 - `noise` weakens similar future candidates.
-- `report_candidate` and `rfp_evidence` are boosted in reports.
+- `insight`, `report_candidate`, and `rfp_evidence` tags are boosted in reports.
 - Repeated themes across multiple items get surfaced as higher-level signals.
 
 No heavy machine learning is required at first.

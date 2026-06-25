@@ -1005,11 +1005,9 @@ async def api_move_editor_review(payload: EditorReviewMovePayload):
             note=payload.note
         )
         label = {
-            "strategy_report": "report_candidate",
-            "watch_competitor": "watch_competitor",
-            "product_idea": "product_idea",
-            "rfp_evidence": "rfp_evidence",
-            "likely_noise": "noise"
+            "review_queue": "later",
+            "insight": "important",
+            "noise": "noise"
         }.get(payload.target_bucket, "important")
         judgment = database.save_editor_judgment(
             profile_id=payload.profile_id,

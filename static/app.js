@@ -2977,7 +2977,7 @@ function renderInsightCandidates(data) {
 
     if (DOM.insightCandidateStatus) {
         DOM.insightCandidateStatus.textContent = total
-            ? `AI가 정리한 활성 후보 ${total}개가 있습니다.`
+            ? `AI가 정리한 활성 후보 ${total}개가 있습니다. 검토 대기에서 인사이트와 노이즈를 골라주세요.`
             : "아직 정리된 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 분류하세요.";
     }
 
@@ -3004,9 +3004,14 @@ function renderInsightCard(item) {
     const dateText = item.published_at
         ? `발행 ${formatDate(item.published_at)}`
         : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
+    const tags = parseInsightTags(item.suggested_tags || item.secondary_buckets);
+    const tagHtml = tags.length
+        ? `<div class="insight-card-tags">${tags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
+        : "";
     return `
         <article class="insight-card" draggable="true" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
             <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
+            ${tagHtml}
             <div class="insight-card-meta">
                 <span>${escapeHtml(source)}</span>
                 <span>${escapeHtml(dateText)}</span>
@@ -3018,12 +3023,33 @@ function renderInsightCard(item) {
             </div>
             <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
             <div class="insight-card-actions">
-                <button class="insight-action-btn" data-label="approve" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}" data-bucket="${item.primary_bucket}">승인</button>
-                <button class="insight-action-btn" data-label="report_candidate" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">보고서 후보</button>
-                <button class="insight-action-btn noise" data-label="noise" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">노이즈</button>
+                <button class="insight-action-btn positive" data-move-bucket="insight" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">인사이트</button>
+                <button class="insight-action-btn" data-move-bucket="review_queue" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">보류</button>
+                <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
             </div>
         </article>
     `;
+}
+
+function parseInsightTags(rawTags) {
+    if (!rawTags) return [];
+    return String(rawTags)
+        .split(",")
+        .map(tag => tag.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+}
+
+function formatInsightTag(tag) {
+    const labels = {
+        report: "보고서",
+        competitor: "경쟁사",
+        product_idea: "제품 아이디어",
+        rfp_evidence: "RFP/제안 근거",
+        regulation: "규제/시장 신호",
+        technical_reference: "기술 레퍼런스"
+    };
+    return labels[tag] || tag;
 }
 
 function setupInsightDragAndDrop() {
@@ -3089,54 +3115,32 @@ async function handleInsightCardMove(aiReviewId, targetBucket, currentBucket) {
             throw new Error(err.detail || "카테고리 이동 저장 실패");
         }
         await loadInsightCandidates();
+        return true;
     } catch (e) {
         if (DOM.insightCandidateStatus) {
             DOM.insightCandidateStatus.textContent = `카테고리 이동 실패: ${e.message}`;
         }
+        return false;
     }
-}
-
-function resolveApprovedLabel(bucket) {
-    const mapping = {
-        strategy_report: "report_candidate",
-        watch_competitor: "watch_competitor",
-        product_idea: "product_idea",
-        rfp_evidence: "rfp_evidence",
-        likely_noise: "noise"
-    };
-    return mapping[bucket] || "important";
 }
 
 async function handleInsightJudgment(btn) {
     if (!currentProfileId) return;
-    const requestedLabel = btn.getAttribute("data-label");
-    const bucket = btn.getAttribute("data-bucket");
-    const label = requestedLabel === "approve" ? resolveApprovedLabel(bucket) : requestedLabel;
-    const payload = {
-        profile_id: currentProfileId,
-        ai_review_id: Number(btn.getAttribute("data-review-id")),
-        item_type: btn.getAttribute("data-item-type"),
-        item_id: Number(btn.getAttribute("data-item-id")),
-        label,
-        note: requestedLabel === "approve" ? "AI 후보 분류 승인" : ""
-    };
+    const moveBucket = btn.getAttribute("data-move-bucket");
+    const aiReviewId = Number(btn.getAttribute("data-review-id"));
+    const currentBucket = btn.getAttribute("data-current-bucket");
+    if (!moveBucket || !aiReviewId) return;
 
     btn.setAttribute("disabled", "true");
     const originalText = btn.textContent;
     btn.textContent = "저장";
 
     try {
-        const res = await fetch("/api/editor/judgments", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || "판정 저장 실패");
+        const saved = await handleInsightCardMove(aiReviewId, moveBucket, currentBucket);
+        if (!saved) {
+            btn.textContent = originalText;
+            btn.removeAttribute("disabled");
         }
-        btn.textContent = "완료";
-        setTimeout(() => loadInsightCandidates(), 400);
     } catch (e) {
         btn.textContent = originalText;
         btn.removeAttribute("disabled");
