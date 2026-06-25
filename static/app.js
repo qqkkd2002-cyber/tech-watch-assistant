@@ -296,6 +296,7 @@ const DOM = {
     statStarredSignals: document.getElementById("stat-starred-signals"),
     generateInsightCandidatesBtn: document.getElementById("generate-insight-candidates-btn"),
     summarizeReviewQueueBtn: document.getElementById("summarize-review-queue-btn"),
+    refineReviewQueueBtn: document.getElementById("refine-review-queue-btn"),
     insightCandidateStatus: document.getElementById("insight-candidate-status"),
     insightCandidateBuckets: document.getElementById("insight-candidate-buckets"),
     retrySummaryBtn: document.getElementById("retry-summary-btn"),
@@ -402,6 +403,9 @@ function setupEventListeners() {
     }
     if (DOM.summarizeReviewQueueBtn) {
         DOM.summarizeReviewQueueBtn.addEventListener("click", handleSummarizeReviewQueue);
+    }
+    if (DOM.refineReviewQueueBtn) {
+        DOM.refineReviewQueueBtn.addEventListener("click", handleRefineReviewQueue);
     }
     
     // Delete Profile
@@ -2744,7 +2748,7 @@ async function loadGlobalTemplates() {
 function getTemplateDisplayName(id) {
     switch (id) {
         case "basic": return "[기본] 기술 신호 및 경쟁사 동향 보고서";
-        case "monthly": return "[월간] 솔루션전략팀 월간 전략 보고서";
+        case "monthly": return "[월간] 솔루션전략팀 전략 보고서";
         case "detailed": return "[상세] 경쟁사 기능 심층분석보고서";
         default: return id;
     }
@@ -3005,6 +3009,9 @@ function renderInsightCandidates(data) {
     DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightSummary(btn));
     });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-refine-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightRefine(btn));
+    });
     setupInsightDragAndDrop();
 }
 
@@ -3028,6 +3035,11 @@ function renderInsightCard(item) {
     const summaryActionHtml = isSummaryPending
         ? `<button class="insight-summary-btn" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">AI 요약 생성</button>`
         : "";
+    const isPrecisionClassified = item.classification_source === "llm";
+    const sourceLabel = isPrecisionClassified ? "정밀 분류" : "규칙 분류";
+    const refineActionHtml = !isPrecisionClassified && item.primary_bucket === "review_queue"
+        ? `<button class="insight-refine-btn" data-review-id="${item.id}">정밀 분류</button>`
+        : "";
     return `
         <article class="insight-card" draggable="true" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
             <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
@@ -3036,6 +3048,7 @@ function renderInsightCard(item) {
                 <span>${escapeHtml(source)}</span>
                 <span>${escapeHtml(dateText)}</span>
                 <span>${item.analysis_status === "pending" ? "AI 요약 대기" : "요약 완료"}</span>
+                <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
             </div>
             <div class="insight-card-score">
                 <span>점수 ${Number(item.score || 0)}</span>
@@ -3045,6 +3058,7 @@ function renderInsightCard(item) {
             <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
             <div class="insight-card-actions">
                 ${summaryActionHtml}
+                ${refineActionHtml}
                 <button class="insight-action-btn positive" data-move-bucket="insight" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">인사이트</button>
                 <button class="insight-action-btn" data-move-bucket="review_queue" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">보류</button>
                 <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
@@ -3147,6 +3161,94 @@ async function handleSummarizeReviewQueue() {
     }
 }
 
+async function refineInsightReview(aiReviewId) {
+    if (!currentProfileId || !aiReviewId) {
+        throw new Error("정밀 분류할 후보 정보가 부족합니다.");
+    }
+    const res = await fetch("/api/editor/reviews/refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            profile_id: currentProfileId,
+            ai_review_id: aiReviewId
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.detail || "정밀 분류에 실패했습니다.");
+    }
+    return data;
+}
+
+async function handleInsightRefine(btn) {
+    const aiReviewId = Number(btn.getAttribute("data-review-id"));
+    const originalText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = "분류 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "선택한 후보를 나중에 다시 쓸 가치 기준으로 정밀 분류하고 있습니다.";
+    }
+
+    try {
+        await refineInsightReview(aiReviewId);
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "정밀 분류가 완료되었습니다. 카드 위치와 이유를 다시 불러옵니다.";
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `정밀 분류 실패: ${e.message}`;
+        }
+    }
+}
+
+async function handleRefineReviewQueue() {
+    if (!currentProfileId || !DOM.refineReviewQueueBtn) return;
+    const reviewQueue = (latestInsightCandidateData?.buckets || []).find(bucket => bucket.bucket === "review_queue");
+    const targets = (reviewQueue?.items || [])
+        .filter(item => item.classification_source !== "llm")
+        .slice(0, 3);
+
+    if (!targets.length) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "검토 대기 안에 정밀 분류가 필요한 후보가 없습니다.";
+        }
+        return;
+    }
+
+    const btn = DOM.refineReviewQueueBtn;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+
+    let successCount = 0;
+    try {
+        for (let i = 0; i < targets.length; i += 1) {
+            const item = targets[i];
+            btn.textContent = `분류 중 ${i + 1}/${targets.length}`;
+            if (DOM.insightCandidateStatus) {
+                DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${i + 1}/${targets.length}개째를 정밀 분류하고 있습니다.`;
+            }
+            await refineInsightReview(item.id);
+            successCount += 1;
+        }
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${successCount}개를 정밀 분류했습니다.`;
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `정밀 분류 중단: ${successCount}개 완료, 오류: ${e.message}`;
+        }
+        await loadInsightCandidates();
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
 function parseInsightTags(rawTags) {
     if (!rawTags) return [];
     return String(rawTags)
@@ -3158,11 +3260,19 @@ function parseInsightTags(rawTags) {
 
 function formatInsightTag(tag) {
     const labels = {
-        report: "보고서",
+        report: "시장 신호",
         competitor: "경쟁사",
-        product_idea: "제품 아이디어",
+        market_signal: "시장 신호",
+        ai_security: "AI/보안",
+        finance: "금융권",
+        core_banking: "코어뱅킹",
+        devops: "DevOps",
+        platform_engineering: "플랫폼 엔지니어링",
+        product_hint: "제품 힌트",
+        product_idea: "제품 힌트",
         rfp_evidence: "RFP/제안 근거",
-        regulation: "규제/시장 신호",
+        regulation: "규제/정책",
+        regulation_policy: "규제/정책",
         technical_reference: "기술 레퍼런스"
     };
     return labels[tag] || tag;

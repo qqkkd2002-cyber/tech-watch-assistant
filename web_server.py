@@ -111,6 +111,10 @@ class EditorReviewMovePayload(BaseModel):
     target_bucket: str
     note: str = ""
 
+class EditorReviewRefinePayload(BaseModel):
+    profile_id: int
+    ai_review_id: int
+
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
     seed_keyword: str = ""
@@ -297,6 +301,98 @@ Respond ONLY as valid JSON with this schema:
         "title": str(result.get("title", "")).strip() or item.get("title", ""),
         "summary": str(result.get("summary", "")).strip() or item.get("summary", ""),
         "source": str(result.get("source", "")).strip() or "News"
+    }
+
+async def refine_editor_review_item(api_key: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    fixed_tag_lines = "\n".join([
+        f"- {key}: {label}"
+        for key, label in database.SUGGESTED_TAG_LABELS.items()
+    ])
+    summary_text = item.get("summary", "") or ""
+    if len(summary_text) > 2600:
+        summary_text = summary_text[:2600].rstrip() + "..."
+
+    prompt = f"""
+You are classifying one collected monitoring item for a Korean solution strategy team.
+
+Product identity:
+- This app is a pre-accumulation system, not primarily a report writer.
+- The core question is whether this item should be kept as reusable strategic material for future reports, upper-level planning, competitor analysis, proposal/RFP evidence, or technology strategy.
+- Noise should be demoted, not deleted, because the original item remains searchable in the collection ledger.
+
+Item:
+Type: {item.get('item_type', '')}
+Title: {item.get('title', '')}
+Source: {item.get('source_name', '')}
+Category/Keyword: {item.get('category', '')}
+Published at: {item.get('published_at', '')}
+Current summary/body:
+{summary_text}
+
+Allowed primary_bucket values:
+- review_queue: might be reusable, but needs human review
+- insight: clearly reusable as future strategic material
+- noise: likely not useful for later strategy/planning, even if it matched a keyword
+
+Allowed suggested_tags. Pick up to 4 from this fixed list only:
+{fixed_tag_lines}
+
+Rules:
+- Respond ONLY as valid JSON. Do not include markdown fences.
+- Write a reason that is specific to this item, not a generic template.
+- Do not over-promote generic finance news, personnel articles, investment articles, or unrelated keyword matches.
+- Use "noise" when the item lacks reusable strategy value.
+- score means reusable strategic value, 0-100.
+- confidence means confidence in the classification, 0-100.
+
+JSON schema:
+{{
+  "primary_bucket": "review_queue|insight|noise",
+  "score": 0,
+  "confidence": 0,
+  "reason": "한국어 1-2문장. 이 항목이 나중에 왜 쓸 만한지 또는 왜 노이즈인지 구체적으로 설명",
+  "suggested_tags": ["competitor"],
+  "related_theme": "짧은 한국어 테마"
+}}
+"""
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You classify collected monitoring items for a Korean strategy team. Return valid JSON only."
+    )
+    async with Agent(config=sdk_config) as ai_agent:
+        response = await ai_agent.chat(prompt)
+        text = await response.text()
+
+    result = extract_json_object(text)
+    bucket = str(result.get("primary_bucket", "review_queue")).strip()
+    if bucket not in ("review_queue", "insight", "noise"):
+        bucket = "review_queue"
+
+    def clamp_score(value: Any, default: int) -> int:
+        try:
+            return max(0, min(int(value), 100))
+        except Exception:
+            return default
+
+    tags = database.normalize_editor_tags(result.get("suggested_tags", []), limit=4)
+    if not tags:
+        tags = ["technical_reference"]
+
+    reason = str(result.get("reason", "")).strip()
+    if not reason:
+        reason = "이 항목의 재사용 가치 판단을 위해 정밀 분류를 실행했지만, 구체 이유가 비어 있어 검토 대기로 남겼습니다."
+
+    return {
+        "primary_bucket": bucket,
+        "score": clamp_score(result.get("score"), 55),
+        "confidence": clamp_score(result.get("confidence"), 60),
+        "reason": reason,
+        "suggested_tags": tags,
+        "secondary_buckets": tags,
+        "related_theme": str(result.get("related_theme", "")).strip() or item.get("category") or item.get("source_name") or "전략 신호",
+        "classification_source": "llm",
+        "model_name": "gemini",
+        "prompt_version": "reuse-value-v1",
     }
 
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
@@ -1020,6 +1116,41 @@ async def api_move_editor_review(payload: EditorReviewMovePayload):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"success": True, "review": moved, "judgment": judgment}
+
+@app.post("/api/editor/reviews/refine")
+async def api_refine_editor_review(payload: EditorReviewRefinePayload):
+    """Runs on-demand LLM precision classification for one active candidate."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(payload.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for precision classification.")
+
+    context = database.get_ai_editor_review_context(payload.profile_id, payload.ai_review_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Active AI review not found.")
+
+    if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+        raise HTTPException(status_code=400, detail="이미 사용자가 판단한 카드라 AI가 다시 덮어쓰지 않습니다.")
+
+    try:
+        refined = await refine_editor_review_item(api_key, context)
+        updated = database.update_ai_editor_review_classification(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            review=refined
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"정밀 분류 실패: {exc}")
+
+    return {"success": True, "review": updated}
 
 @app.post("/api/editor/judgments")
 async def api_save_editor_judgment(payload: EditorJudgmentPayload):

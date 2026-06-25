@@ -151,6 +151,7 @@ def init_db():
         primary_bucket TEXT NOT NULL,
         secondary_buckets TEXT DEFAULT '',
         suggested_tags TEXT DEFAULT '',
+        classification_source TEXT DEFAULT 'rule_based',
         score INTEGER DEFAULT 0,
         confidence INTEGER DEFAULT 0,
         reason TEXT DEFAULT '',
@@ -195,6 +196,8 @@ def init_db():
     ai_review_cols = [row['name'] for row in cursor.fetchall()]
     if 'suggested_tags' not in ai_review_cols:
         cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN suggested_tags TEXT DEFAULT ''")
+    if 'classification_source' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN classification_source TEXT DEFAULT 'rule_based'")
     cursor.execute("""
         UPDATE ai_editor_reviews
         SET suggested_tags = CASE primary_bucket
@@ -332,7 +335,7 @@ Please structure the report exactly as follows:
 
 Make the formatting clean and highly readable for Markdown."""),
         
-        ("monthly", "[월간] 솔루션전략팀 월간 전략 보고서",
+        ("monthly", "[월간] 솔루션전략팀 전략 보고서",
          """You are writing a monthly strategic intelligence report for the 솔루션전략팀.
 Analyze collected competitor updates and technology news to explain what is changing in the market and what it means for our solution strategy.
 
@@ -358,7 +361,7 @@ Rules:
 {trends_context}
 
 Please structure the report exactly as follows:
-# 솔루션전략팀 월간 전략 보고서 ({current_date})
+# 솔루션전략팀 전략 보고서 ({current_date})
 
 ## 1. 전략적 핵심 요약
 - 이번 달 기술 시장과 경쟁사 움직임의 핵심 결론을 5개 이내로 정리합니다.
@@ -1303,13 +1306,47 @@ BUCKET_LABELS = {
 }
 
 SUGGESTED_TAG_LABELS = {
-    "report": "보고서",
     "competitor": "경쟁사",
-    "product_idea": "제품 아이디어",
-    "rfp_evidence": "RFP/제안 근거",
-    "regulation": "규제/시장 신호",
+    "market_signal": "시장 신호",
+    "ai_security": "AI/보안",
+    "finance": "금융권",
+    "core_banking": "코어뱅킹",
+    "devops": "DevOps",
+    "platform_engineering": "플랫폼 엔지니어링",
+    "rfp_evidence": "RFP 근거",
+    "product_hint": "제품 힌트",
+    "regulation_policy": "규제/정책",
     "technical_reference": "기술 레퍼런스",
 }
+
+FIXED_EDITOR_TAGS = set(SUGGESTED_TAG_LABELS.keys())
+
+LEGACY_TAG_MAP = {
+    "report": "market_signal",
+    "product_idea": "product_hint",
+    "regulation": "regulation_policy",
+}
+
+def normalize_editor_tags(tags: Any, limit: int = 4) -> List[str]:
+    if isinstance(tags, str):
+        raw_tags = [tag.strip() for tag in tags.split(",")]
+    elif isinstance(tags, list):
+        raw_tags = [str(tag).strip() for tag in tags]
+    else:
+        raw_tags = []
+
+    normalized = []
+    for tag in raw_tags:
+        if not tag:
+            continue
+        tag = LEGACY_TAG_MAP.get(tag, tag)
+        if tag not in FIXED_EDITOR_TAGS:
+            continue
+        if tag not in normalized:
+            normalized.append(tag)
+        if len(normalized) >= limit:
+            break
+    return normalized
 
 def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "", ai_review_id: Optional[int] = None) -> Dict[str, Any]:
     if item_type not in ("doc", "trend"):
@@ -1370,8 +1407,13 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     else:
         if any(term in haystack for term in rfp_terms):
             tags.append("rfp_evidence")
+            tags.append("finance")
             if "규제" in haystack or "가이드라인" in haystack:
-                tags.append("regulation")
+                tags.append("regulation_policy")
+            if "코어뱅킹" in haystack:
+                tags.append("core_banking")
+            if "보안" in haystack or "ai보안" in haystack:
+                tags.append("ai_security")
             score = max(score, 70)
             confidence = max(confidence, 64)
         if any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
@@ -1379,15 +1421,21 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
             score = max(score, 66)
             confidence = max(confidence, 63)
         if any(term in haystack for term in product_terms):
-            tags.append("product_idea")
+            if "platform engineering" in haystack or "플랫폼 엔지니어링" in haystack or "idp" in haystack:
+                tags.append("platform_engineering")
+            elif "devops" in haystack or "gitops" in haystack or "devsecops" in haystack:
+                tags.append("devops")
+            else:
+                tags.append("product_hint")
             score = max(score, 64)
             confidence = max(confidence, 61)
         if any(term in haystack for term in report_terms):
-            tags.append("report")
+            tags.append("market_signal")
             score = max(score, 62)
             confidence = max(confidence, 60)
         if not tags:
             tags.append("technical_reference")
+        tags = normalize_editor_tags(tags)
 
         tag_names = [SUGGESTED_TAG_LABELS.get(tag, tag) for tag in tags]
         reason = f"AI가 바로 확정하지 않고 검토 대기 후보로 올렸습니다. 참고 태그: {', '.join(tag_names)}."
@@ -1411,6 +1459,7 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
         "related_theme": theme,
         "model_name": "rule-based-v1",
         "prompt_version": "rules-2026-06-24",
+        "classification_source": "rule_based",
     }
 
 def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
@@ -1419,6 +1468,8 @@ def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review:
     bucket = review.get("primary_bucket") or "review_queue"
     if bucket not in EDITOR_BUCKETS:
         raise ValueError(f"Unsupported editor bucket: {bucket}")
+    tags = normalize_editor_tags(review.get("suggested_tags", review.get("secondary_buckets", "")))
+    tag_text = ",".join(tags)
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1434,18 +1485,19 @@ def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review:
         cursor.execute(
             """
             INSERT INTO ai_editor_reviews (
-                profile_id, item_type, item_id, primary_bucket, secondary_buckets, suggested_tags,
+                profile_id, item_type, item_id, primary_bucket, secondary_buckets, suggested_tags, classification_source,
                 score, confidence, reason, related_theme, model_name, prompt_version, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 profile_id,
                 item_type,
                 item_id,
                 bucket,
-                review.get("secondary_buckets", ""),
-                review.get("suggested_tags", review.get("secondary_buckets", "")),
+                tag_text,
+                tag_text,
+                review.get("classification_source", "rule_based"),
                 int(review.get("score") or 0),
                 int(review.get("confidence") or 0),
                 review.get("reason", ""),
@@ -1494,6 +1546,133 @@ def move_ai_editor_review(profile_id: int, ai_review_id: int, target_bucket: str
             WHERE id = ? AND profile_id = ? AND is_active = 1
             """,
             (target_bucket, reason, ai_review_id, profile_id)
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def has_user_editor_judgment(profile_id: int, item_type: str, item_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM editor_judgments
+            WHERE profile_id = ?
+              AND item_type = ?
+              AND item_id = ?
+              AND label IN ('important', 'noise', 'later')
+            LIMIT 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        return cursor.fetchone() is not None
+    finally:
+        conn.close()
+
+def get_ai_editor_review_context(profile_id: int, ai_review_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT
+                ar.*,
+                d.title,
+                d.competitor AS source_name,
+                d.doc_type AS category,
+                d.link,
+                d.summary,
+                d.published_at,
+                d.created_at AS item_created_at,
+                d.analysis_status,
+                d.is_starred
+            FROM ai_editor_reviews ar
+            JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+            WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+
+            UNION ALL
+
+            SELECT
+                ar.*,
+                t.title,
+                t.source AS source_name,
+                t.keyword AS category,
+                t.link,
+                t.summary,
+                t.published_at,
+                t.created_at AS item_created_at,
+                t.analysis_status,
+                t.is_starred
+            FROM ai_editor_reviews ar
+            JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+            WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+            """,
+            (ai_review_id, profile_id, ai_review_id, profile_id)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def update_ai_editor_review_classification(profile_id: int, ai_review_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
+    bucket = review.get("primary_bucket") or "review_queue"
+    if bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {bucket}")
+    tags = normalize_editor_tags(review.get("suggested_tags", review.get("secondary_buckets", "")))
+    tag_text = ",".join(tags)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id)
+        )
+        current = cursor.fetchone()
+        if not current:
+            raise ValueError("Active AI review not found.")
+        if has_user_editor_judgment(profile_id, current["item_type"], current["item_id"]):
+            raise ValueError("User judgment already exists. AI reclassification will not overwrite it.")
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?,
+                secondary_buckets = ?,
+                suggested_tags = ?,
+                classification_source = ?,
+                score = ?,
+                confidence = ?,
+                reason = ?,
+                related_theme = ?,
+                model_name = ?,
+                prompt_version = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (
+                bucket,
+                tag_text,
+                tag_text,
+                review.get("classification_source", "llm"),
+                int(review.get("score") or 0),
+                int(review.get("confidence") or 0),
+                review.get("reason", ""),
+                review.get("related_theme", ""),
+                review.get("model_name", "gemini"),
+                review.get("prompt_version", "reuse-value-v1"),
+                ai_review_id,
+                profile_id,
+            )
         )
         conn.commit()
         cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
