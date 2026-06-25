@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260625-v2-flow-guide">
+    <link rel="stylesheet" href="style.css?v=20260625-v2-intro-layout">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -683,63 +683,33 @@
                             </div>
                         </div>
 
-                        <div class="guide-principle-box">
-                            <span class="principle-label">핵심 운영 원칙</span>
-                            <p><strong>자동 수집이 자료를 쌓고, AI가 검토 후보를 좁히고, 사람은 최종 인사이트를 확정합니다.</strong></p>
-                            <small>수동으로 모든 기사를 읽는 방식이 아니라, 수집된 자료를 AI가 먼저 정리하고 사용자는 검토 대기 카드만 요약·판단합니다. 확정된 인사이트와 요약 근거는 보고서, 경쟁사 비교, 제안/RFP 자료로 재사용되는 팀 자산이 됩니다.</small>
+                        <div class="intro-hero-message">
+                            <span class="intro-kicker">핵심 운영 원칙</span>
+                            <h2>자동 수집으로 시장 신호를 쌓고, AI가 후보를 좁히고, 사람이 인사이트를 확정합니다.</h2>
+                            <p>모든 기사를 사람이 다 읽는 방식이 아니라, AI가 만든 검토 대기 목록을 편집장처럼 판단하는 워크플로우입니다.</p>
                         </div>
 
-                        <div class="guide-value-grid">
-                            <div class="guide-value-card">
-                                <span class="value-label">1. 자동으로 쌓이는 것</span>
-                                <ul>
-                                    <li>설정한 주기마다 RSS·Docs·뉴스 확인</li>
-                                    <li>경쟁사 릴리즈와 기술 레퍼런스 저장</li>
-                                    <li>관심 키워드 기반 기술 뉴스 누적</li>
-                                    <li>발행일과 수집일을 따로 기록</li>
-                                    <li>개인 프로필별 키워드와 폴더 분리</li>
-                                    <li>수집 결과와 보고서를 팀 자산으로 보관</li>
-                                </ul>
-                            </div>
-                            <div class="guide-value-card">
-                                <span class="value-label">2. AI가 먼저 줄여주는 것</span>
-                                <ul>
-                                    <li>수집된 전체 자료를 후보 단위로 정리</li>
-                                    <li>검토 대기와 노이즈를 1차로 구분</li>
-                                    <li>보고서·경쟁사·제품·RFP 태그 제안</li>
-                                    <li>검토 대기 카드 중심으로 AI 요약 생성</li>
-                                    <li>모든 기사를 직접 여는 시간을 줄임</li>
-                                    <li>판단할 만한 자료부터 먼저 보이게 함</li>
-                                </ul>
-                            </div>
-                            <div class="guide-value-card">
-                                <span class="value-label">3. 사람이 확정하는 것</span>
-                                <ul>
-                                    <li>검토 대기 카드의 요약과 원문 확인</li>
-                                    <li>중요 신호는 인사이트로 확정</li>
-                                    <li>관련 없는 항목은 노이즈로 이동</li>
-                                    <li>필요한 근거는 별표로 보조 보관</li>
-                                    <li>판단 패턴을 다음 분류 개선에 활용</li>
-                                    <li>보고서에 반영할 전략 신호를 선별</li>
-                                </ul>
-                            </div>
-                        </div>
-
-                        <div class="intro-highlights-grid">
-                            <div class="highlight-box bg-purple-glow">
-                                <div class="highlight-title">
-                                    <span class="highlight-emoji">🔄</span>
-                                    <h4>자동 수집에서 후보 정리까지</h4>
+                        <div class="intro-feature-grid">
+                            <div class="intro-feature-card collect">
+                                <span class="feature-step">01</span>
+                                <h4>자동 수집에서 후보 정리까지</h4>
+                                <p>서버가 켜져 있으면 설정한 주기마다 RSS, Docs, 뉴스가 쌓입니다. 이후 AI 후보 정리를 실행하면 전체 피드가 아니라 검토할 만한 카드와 노이즈로 먼저 좁혀집니다.</p>
+                                <div class="feature-tags">
+                                    <span>RSS·Docs·뉴스</span>
+                                    <span>발행일/수집일</span>
+                                    <span>검토 대기</span>
                                 </div>
-                                <p class="highlight-desc">서버가 켜져 있으면 설정한 주기에 따라 자료가 계속 쌓입니다. 그다음 AI 후보 정리를 실행하면 전체 피드가 아니라 검토할 만한 카드 중심으로 좁혀집니다.</p>
                             </div>
 
-                            <div class="highlight-box bg-cyan-glow">
-                                <div class="highlight-title">
-                                    <span class="highlight-emoji">📈</span>
-                                    <h4>요약하고 확정해서 자산화</h4>
+                            <div class="intro-feature-card asset">
+                                <span class="feature-step">02</span>
+                                <h4>요약하고 확정해서 자산화</h4>
+                                <p>검토 대기 카드는 필요한 것만 AI 요약을 생성합니다. 사용자가 인사이트 또는 노이즈로 확정하면 그 판단과 요약 근거가 보고서와 팀 자료의 품질을 높입니다.</p>
+                                <div class="feature-tags">
+                                    <span>AI 요약</span>
+                                    <span>인사이트 확정</span>
+                                    <span>보고서 근거</span>
                                 </div>
-                                <p class="highlight-desc">검토 대기 카드는 필요한 것만 AI 요약을 생성합니다. 사용자가 인사이트 또는 노이즈로 확정하면 그 판단이 보고서와 다음 분류 품질을 높이는 근거가 됩니다.</p>
                             </div>
                         </div>
 
@@ -749,6 +719,33 @@
                             <div><strong>3. 요약</strong><span>검토 대기만 AI 분석</span></div>
                             <div><strong>4. 편집</strong><span>인사이트 확정</span></div>
                             <div><strong>5. 산출</strong><span>보고서·팀 자산화</span></div>
+                        </div>
+
+                        <div class="guide-value-grid intro-detail-grid">
+                            <div class="guide-value-card">
+                                <span class="value-label">자동으로 쌓이는 것</span>
+                                <ul>
+                                    <li>설정한 주기마다 RSS·Docs·뉴스 확인</li>
+                                    <li>경쟁사 릴리즈와 기술 레퍼런스 저장</li>
+                                    <li>발행일과 수집일을 따로 기록</li>
+                                </ul>
+                            </div>
+                            <div class="guide-value-card">
+                                <span class="value-label">AI가 먼저 줄여주는 것</span>
+                                <ul>
+                                    <li>수집된 전체 자료를 후보 단위로 정리</li>
+                                    <li>검토 대기와 노이즈를 1차로 구분</li>
+                                    <li>보고서·경쟁사·제품·RFP 태그 제안</li>
+                                </ul>
+                            </div>
+                            <div class="guide-value-card">
+                                <span class="value-label">사람이 확정하는 것</span>
+                                <ul>
+                                    <li>검토 대기 카드의 요약과 원문 확인</li>
+                                    <li>중요 신호는 인사이트로 확정</li>
+                                    <li>보고서에 반영할 전략 신호를 선별</li>
+                                </ul>
+                            </div>
                         </div>
 
                         <div class="guide-note-box bg-amber-glow">
@@ -1122,6 +1119,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260625-v2-flow-guide"></script>
+    <script src="app.js?v=20260625-v2-intro-layout"></script>
 </body>
 </html>
