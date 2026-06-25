@@ -94,10 +94,16 @@ class BoardPostPayload(BaseModel):
 
 class EditorJudgmentPayload(BaseModel):
     profile_id: int
+    ai_review_id: Optional[int] = None
     item_type: str
     item_id: int
     label: str
     note: str = ""
+
+class EditorReviewGeneratePayload(BaseModel):
+    profile_id: int
+    limit: int = 80
+    force: bool = False
 
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
@@ -963,6 +969,25 @@ async def api_get_editor_learning(profile_id: int):
     """Returns a simple summary of the user's accumulated editorial judgments."""
     return database.get_editor_learning_summary(profile_id=profile_id)
 
+@app.get("/api/editor/insights")
+async def api_get_editor_insights(profile_id: int, limit_per_bucket: int = 8, include_noise: bool = True):
+    """Returns AI-organized insight candidate buckets for the v2 dashboard."""
+    return database.get_ai_insight_candidates(
+        profile_id=profile_id,
+        limit_per_bucket=limit_per_bucket,
+        include_noise=include_noise
+    )
+
+@app.post("/api/editor/reviews/generate")
+async def api_generate_editor_reviews(payload: EditorReviewGeneratePayload):
+    """Creates rule-based AI editorial reviews for recent unreviewed items."""
+    reviews = database.generate_rule_based_ai_editor_reviews(
+        profile_id=payload.profile_id,
+        limit=payload.limit,
+        force=payload.force
+    )
+    return {"success": True, "created": len(reviews), "reviews": reviews}
+
 @app.post("/api/editor/judgments")
 async def api_save_editor_judgment(payload: EditorJudgmentPayload):
     """Stores one editor judgment label for a collected item."""
@@ -972,7 +997,8 @@ async def api_save_editor_judgment(payload: EditorJudgmentPayload):
             item_type=payload.item_type,
             item_id=payload.item_id,
             label=payload.label,
-            note=payload.note
+            note=payload.note,
+            ai_review_id=payload.ai_review_id
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

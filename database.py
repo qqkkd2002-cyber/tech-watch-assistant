@@ -128,6 +128,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS editor_judgments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         profile_id INTEGER NOT NULL,
+        ai_review_id INTEGER,
         item_type TEXT NOT NULL,
         item_id INTEGER NOT NULL,
         label TEXT NOT NULL,
@@ -135,8 +136,36 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+        FOREIGN KEY (ai_review_id) REFERENCES ai_editor_reviews(id) ON DELETE SET NULL,
         UNIQUE(profile_id, item_type, item_id, label)
     )
+    """)
+
+    # 10. Create ai_editor_reviews table for TWT v2 AI-first candidate classification
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_editor_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL,
+        item_type TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        primary_bucket TEXT NOT NULL,
+        secondary_buckets TEXT DEFAULT '',
+        score INTEGER DEFAULT 0,
+        confidence INTEGER DEFAULT 0,
+        reason TEXT DEFAULT '',
+        related_theme TEXT DEFAULT '',
+        model_name TEXT DEFAULT 'rule-based-v1',
+        prompt_version TEXT DEFAULT 'rules-2026-06-24',
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_editor_reviews_one_active
+    ON ai_editor_reviews(profile_id, item_type, item_id)
+    WHERE is_active = 1
     """)
     
     conn.commit()
@@ -152,6 +181,12 @@ def init_db():
         cursor.execute("ALTER TABLE profiles ADD COLUMN auto_scan_enabled INTEGER DEFAULT 1")
     if 'auto_report_enabled' not in columns:
         cursor.execute("ALTER TABLE profiles ADD COLUMN auto_report_enabled INTEGER DEFAULT 1")
+
+    # Alter editor_judgments table to connect user decisions with AI review versions
+    cursor.execute("PRAGMA table_info(editor_judgments)")
+    judgment_cols = [row['name'] for row in cursor.fetchall()]
+    if 'ai_review_id' not in judgment_cols:
+        cursor.execute("ALTER TABLE editor_judgments ADD COLUMN ai_review_id INTEGER")
     
     # Alter scanned_docs table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_docs)")
@@ -1226,7 +1261,23 @@ EDITOR_LABELS = {
     "later",
 }
 
-def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "") -> Dict[str, Any]:
+EDITOR_BUCKETS = {
+    "strategy_report",
+    "watch_competitor",
+    "product_idea",
+    "rfp_evidence",
+    "likely_noise",
+}
+
+BUCKET_LABELS = {
+    "strategy_report": "전략 보고서 후보",
+    "watch_competitor": "경쟁사 주시 후보",
+    "product_idea": "제품/솔루션 아이디어 후보",
+    "rfp_evidence": "제안/RFP 근거 후보",
+    "likely_noise": "노이즈 가능성 높음",
+}
+
+def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "", ai_review_id: Optional[int] = None) -> Dict[str, Any]:
     if item_type not in ("doc", "trend"):
         raise ValueError("item_type must be 'doc' or 'trend'")
     if label not in EDITOR_LABELS:
@@ -1237,12 +1288,12 @@ def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: s
     try:
         cursor.execute(
             """
-            INSERT INTO editor_judgments (profile_id, item_type, item_id, label, note)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO editor_judgments (profile_id, ai_review_id, item_type, item_id, label, note)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(profile_id, item_type, item_id, label)
-            DO UPDATE SET note = excluded.note, updated_at = CURRENT_TIMESTAMP
+            DO UPDATE SET ai_review_id = excluded.ai_review_id, note = excluded.note, updated_at = CURRENT_TIMESTAMP
             """,
-            (profile_id, item_type, item_id, label, note)
+            (profile_id, ai_review_id, item_type, item_id, label, note)
         )
         conn.commit()
         cursor.execute(
@@ -1254,6 +1305,283 @@ def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: s
         )
         row = cursor.fetchone()
         return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
+    title = (item.get("title") or "").lower()
+    category = (item.get("category") or "").lower()
+    source_name = (item.get("source_name") or "").lower()
+    summary = (item.get("summary") or "").lower()
+    haystack = " ".join([title, category, source_name, summary])
+
+    bucket = "strategy_report"
+    score = 52
+    confidence = 58
+    theme = item.get("category") or item.get("source_name") or "기술 신호"
+    reason = "최근 수집된 항목으로 전략 검토 후보에 올렸습니다."
+
+    noise_terms = ["backstage", "concert", "golf", "travel", "sortir", "연예", "공연", "카르네발", "재생에너지 투자"]
+    rfp_terms = ["금융", "은행", "증권", "보험", "망분리", "보안", "규제", "거버넌스", "ai보안", "차세대", "코어뱅킹"]
+    product_terms = ["developer experience", "개발자 생산성", "platform engineering", "플랫폼 엔지니어링", "idp", "devops", "devsecops", "gitops", "llmops", "rag"]
+    competitor_terms = ["github", "gitlab", "atlassian", "jira", "azure devops", "harness", "copilot"]
+
+    if any(term in haystack for term in noise_terms):
+        bucket = "likely_noise"
+        score = 35
+        confidence = 62
+        reason = "등록 키워드와는 맞지만 기술/경쟁사 전략과 직접 관련이 낮아 보입니다."
+    elif any(term in haystack for term in rfp_terms):
+        bucket = "rfp_evidence"
+        score = 78
+        confidence = 72
+        reason = "금융권, 보안, 규제, 차세대 키워드와 연결되어 제안/RFP 근거 후보로 볼 수 있습니다."
+    elif any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
+        bucket = "watch_competitor"
+        score = 72
+        confidence = 70
+        reason = "경쟁사 또는 개발 플랫폼 변화와 연결되어 추적 후보로 볼 수 있습니다."
+    elif any(term in haystack for term in product_terms):
+        bucket = "product_idea"
+        score = 68
+        confidence = 66
+        reason = "제품/솔루션 기획에 참고할 수 있는 기술 운영 패턴으로 보입니다."
+
+    if int(item.get("is_starred") or 0) == 1:
+        score += 12
+        confidence += 6
+        reason += " 이미 중요 보관함에 포함된 항목이라 우선순위를 높였습니다."
+    if item.get("analysis_status") == "pending":
+        reason += " 현재 AI 요약 대기 상태이므로 원문 확인 또는 요약 생성이 필요합니다."
+
+    score = max(0, min(score, 100))
+    confidence = max(0, min(confidence, 100))
+    return {
+        "primary_bucket": bucket,
+        "secondary_buckets": "",
+        "score": score,
+        "confidence": confidence,
+        "reason": reason,
+        "related_theme": theme,
+        "model_name": "rule-based-v1",
+        "prompt_version": "rules-2026-06-24",
+    }
+
+def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    bucket = review.get("primary_bucket") or "strategy_report"
+    if bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {bucket}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE profile_id = ? AND item_type = ? AND item_id = ? AND is_active = 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        cursor.execute(
+            """
+            INSERT INTO ai_editor_reviews (
+                profile_id, item_type, item_id, primary_bucket, secondary_buckets,
+                score, confidence, reason, related_theme, model_name, prompt_version, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                profile_id,
+                item_type,
+                item_id,
+                bucket,
+                review.get("secondary_buckets", ""),
+                int(review.get("score") or 0),
+                int(review.get("confidence") or 0),
+                review.get("reason", ""),
+                review.get("related_theme", ""),
+                review.get("model_name", "rule-based-v1"),
+                review.get("prompt_version", "rules-2026-06-24"),
+            )
+        )
+        review_id = cursor.lastrowid
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool = False) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 80), 150))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        active_filter = "" if force else "AND ar.id IS NULL"
+        cursor.execute(
+            f"""
+            SELECT * FROM (
+                SELECT
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at,
+                    d.analysis_status,
+                    d.is_starred
+                FROM scanned_docs d
+                LEFT JOIN ai_editor_reviews ar
+                    ON ar.profile_id = d.profile_id
+                    AND ar.item_type = 'doc'
+                    AND ar.item_id = d.id
+                    AND ar.is_active = 1
+                WHERE d.profile_id = ? {active_filter}
+
+                UNION ALL
+
+                SELECT
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at,
+                    t.analysis_status,
+                    t.is_starred
+                FROM scanned_trends t
+                LEFT JOIN ai_editor_reviews ar
+                    ON ar.profile_id = t.profile_id
+                    AND ar.item_type = 'trend'
+                    AND ar.item_id = t.id
+                    AND ar.is_active = 1
+                WHERE t.profile_id = ? {active_filter}
+            )
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, limit)
+        )
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def generate_rule_based_ai_editor_reviews(profile_id: int, limit: int = 80, force: bool = False) -> List[Dict[str, Any]]:
+    items = get_items_for_ai_editor_review(profile_id, limit=limit, force=force)
+    reviews = []
+    for item in items:
+        review = classify_editor_candidate(item)
+        saved = save_ai_editor_review(profile_id, item["item_type"], item["item_id"], review)
+        saved["title"] = item.get("title", "")
+        saved["source_name"] = item.get("source_name", "")
+        saved["category"] = item.get("category", "")
+        reviews.append(saved)
+    return reviews
+
+def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, include_noise: bool = True) -> Dict[str, Any]:
+    limit_per_bucket = max(1, min(int(limit_per_bucket or 8), 30))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        noise_filter = "" if include_noise else "AND ar.primary_bucket != 'likely_noise'"
+        cursor.execute(
+            f"""
+            WITH active_reviews AS (
+                SELECT *
+                FROM ai_editor_reviews ar
+                WHERE ar.profile_id = ? AND ar.is_active = 1 {noise_filter}
+            ),
+            candidates AS (
+                SELECT
+                    ar.*,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    d.is_starred
+                FROM active_reviews ar
+                JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+
+                UNION ALL
+
+                SELECT
+                    ar.*,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    t.is_starred
+                FROM active_reviews ar
+                JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY primary_bucket
+                        ORDER BY score DESC, confidence DESC, item_created_at DESC
+                    ) AS bucket_rank
+                FROM candidates
+            )
+            SELECT *
+            FROM ranked
+            WHERE bucket_rank <= ?
+            ORDER BY
+                CASE primary_bucket
+                    WHEN 'strategy_report' THEN 1
+                    WHEN 'watch_competitor' THEN 2
+                    WHEN 'product_idea' THEN 3
+                    WHEN 'rfp_evidence' THEN 4
+                    WHEN 'likely_noise' THEN 5
+                    ELSE 9
+                END,
+                score DESC,
+                item_created_at DESC
+            """,
+            (profile_id, limit_per_bucket)
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        buckets = []
+        for bucket in ["strategy_report", "watch_competitor", "product_idea", "rfp_evidence", "likely_noise"]:
+            items = [r for r in rows if r.get("primary_bucket") == bucket]
+            buckets.append({
+                "bucket": bucket,
+                "label": BUCKET_LABELS[bucket],
+                "count": len(items),
+                "items": items,
+            })
+        cursor.execute(
+            """
+            SELECT primary_bucket, COUNT(*) AS total
+            FROM ai_editor_reviews
+            WHERE profile_id = ? AND is_active = 1
+            GROUP BY primary_bucket
+            """,
+            (profile_id,)
+        )
+        totals = {r["primary_bucket"]: r["total"] for r in cursor.fetchall()}
+        for bucket in buckets:
+            bucket["total"] = totals.get(bucket["bucket"], 0)
+        return {"buckets": buckets, "total_active_reviews": sum(totals.values())}
     finally:
         conn.close()
 

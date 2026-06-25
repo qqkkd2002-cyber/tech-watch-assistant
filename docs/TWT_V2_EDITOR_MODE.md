@@ -85,11 +85,11 @@ Initial buckets:
 - `watch_competitor`: 경쟁사 주시 후보
 - `product_idea`: 제품/솔루션 아이디어 후보
 - `rfp_evidence`: 제안/RFP 근거 후보
-- `important_signal`: 중요 신호 후보
-- `check_only`: 확인만 필요
 - `likely_noise`: 노이즈 가능성 높음
 
-AI can assign one primary bucket and optional secondary buckets.
+Keep the first MVP to these five buckets. More buckets can be added after the approval/noise data shows where the extra distinction is actually useful.
+
+AI can assign one primary bucket and optional secondary buckets, but the dashboard should group by the primary bucket.
 
 ## AI Review Fields
 
@@ -109,6 +109,9 @@ ai_editor_reviews
 - confidence
 - reason
 - related_theme
+- model_name
+- prompt_version
+- is_active
 - created_at
 - updated_at
 ```
@@ -116,6 +119,57 @@ ai_editor_reviews
 This is the assistant's first draft.
 
 The existing `editor_judgments` table remains useful as the user's correction and learning signal.
+
+`editor_judgments.ai_review_id` should be nullable.
+
+Why nullable:
+
+- If the user approves or corrects an AI candidate, the judgment should reference the exact AI review.
+- If the user later judges an item from a raw feed/search result, there may be no AI review yet.
+
+This optional link allows accuracy analysis:
+
+```text
+AI said: strategy_report
+User said: noise
+```
+
+That mismatch is one of the most valuable learning signals.
+
+## Reclassification Rule
+
+One collected item can have multiple AI reviews over time.
+
+Reasons:
+
+- prompt changes
+- model changes
+- user manually requests reclassification
+- better context becomes available
+
+Rule:
+
+- keep review history
+- only one active review per `profile_id + item_type + item_id`
+- dashboard uses only `is_active = 1`
+- reclassification sets older active reviews to `is_active = 0` and inserts a new active review
+
+This avoids painful future migrations and preserves the AI decision history.
+
+## Score And Confidence Rules
+
+Use `score` for sorting.
+
+Use `confidence` for UX trust.
+
+Initial rules:
+
+- `score >= 70`: show as primary candidate
+- `score 40-69`: show below the strongest candidates
+- `score < 40`: hide from main candidate view unless it is `likely_noise`
+- low confidence candidates should be shown lower, even if the bucket is interesting
+
+This prevents the dashboard from feeling like a random list.
 
 ## User Editorial Actions
 
@@ -180,6 +234,7 @@ This stores AI's first classification:
 - reason
 - theme
 - confidence
+- active review version
 
 ### MVP 3 - Generate AI Editorial Reviews
 
@@ -195,6 +250,8 @@ The first version can process:
 - latest 50 trends
 - items without an existing AI editorial review
 
+First implementation can use rule-based classification to make the UI useful before spending Gemini quota. Later, the same table can store Gemini-powered reviews.
+
 ### MVP 4 - Dashboard Insight Candidates
 
 Add an `인사이트 후보` section on the dashboard.
@@ -205,15 +262,18 @@ The user can approve or correct from this section.
 
 ### MVP 5 - Reports Use Approved Signals
 
+Defer report integration until the candidate flow is tested with real use.
+
 Weekly/monthly reports should prioritize:
 
 - approved `strategy_report`
-- approved `important_signal`
 - `report_candidate`
 - `rfp_evidence`
 - `watch_competitor`
 
 Noise should be excluded unless explicitly searched.
+
+Do not merge report behavior changes into the main workflow until approved candidates prove useful in practice.
 
 ### MVP 6 - Learning Summary
 
@@ -268,4 +328,3 @@ Dashboard
 The current feed pages remain useful as raw evidence and search surfaces.
 
 But the user's daily workflow should start with AI-organized insight candidates.
-

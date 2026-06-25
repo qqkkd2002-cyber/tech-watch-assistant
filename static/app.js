@@ -293,6 +293,9 @@ const DOM = {
     statMostActiveCompetitor: document.getElementById("stat-most-active-competitor"),
     statTopKeyword: document.getElementById("stat-top-keyword"),
     statStarredSignals: document.getElementById("stat-starred-signals"),
+    generateInsightCandidatesBtn: document.getElementById("generate-insight-candidates-btn"),
+    insightCandidateStatus: document.getElementById("insight-candidate-status"),
+    insightCandidateBuckets: document.getElementById("insight-candidate-buckets"),
     retrySummaryBtn: document.getElementById("retry-summary-btn"),
 };
 
@@ -391,6 +394,9 @@ function setupEventListeners() {
     DOM.saveSettingsBtn.addEventListener("click", handleSaveSettings);
     if (DOM.sidebarAutoScanToggle) {
         DOM.sidebarAutoScanToggle.addEventListener("click", handleSidebarAutoScanToggle);
+    }
+    if (DOM.generateInsightCandidatesBtn) {
+        DOM.generateInsightCandidatesBtn.addEventListener("click", handleGenerateInsightCandidates);
     }
     
     // Delete Profile
@@ -2903,8 +2909,169 @@ async function loadDashboardStats() {
         // 5b. Technical Trends Latest News Widget
         renderTrendLatestWidget(stats.latest_trends);
 
+        // 6. TWT v2 insight candidate buckets
+        loadInsightCandidates();
+
     } catch (e) {
         console.error("Error loading dashboard stats:", e);
+    }
+}
+
+async function handleGenerateInsightCandidates() {
+    if (!currentProfileId || !DOM.generateInsightCandidatesBtn) return;
+
+    DOM.generateInsightCandidatesBtn.setAttribute("disabled", "true");
+    DOM.generateInsightCandidatesBtn.textContent = "정리 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "최근 수집 항목을 인사이트 후보로 분류하고 있습니다.";
+    }
+
+    try {
+        const res = await fetch("/api/editor/reviews/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                limit: 80,
+                force: false
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "후보 정리에 실패했습니다.");
+        }
+        const data = await res.json();
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `${data.created || 0}개 항목을 새 후보로 정리했습니다.`;
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `후보 정리 실패: ${e.message}`;
+        }
+    } finally {
+        DOM.generateInsightCandidatesBtn.removeAttribute("disabled");
+        DOM.generateInsightCandidatesBtn.textContent = "AI 후보 정리";
+    }
+}
+
+async function loadInsightCandidates() {
+    if (!currentProfileId || !DOM.insightCandidateBuckets) return;
+
+    try {
+        const res = await fetch(`/api/editor/insights?profile_id=${currentProfileId}&limit_per_bucket=4&include_noise=true`);
+        if (!res.ok) throw new Error("인사이트 후보를 불러오지 못했습니다.");
+        const data = await res.json();
+        renderInsightCandidates(data);
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `인사이트 후보 로딩 실패: ${e.message}`;
+        }
+    }
+}
+
+function renderInsightCandidates(data) {
+    if (!DOM.insightCandidateBuckets) return;
+    const buckets = data?.buckets || [];
+    const total = data?.total_active_reviews || 0;
+
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = total
+            ? `AI가 정리한 활성 후보 ${total}개가 있습니다.`
+            : "아직 정리된 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 분류하세요.";
+    }
+
+    DOM.insightCandidateBuckets.innerHTML = buckets.map(bucket => `
+        <div class="insight-bucket" data-bucket="${escapeHtml(bucket.bucket)}">
+            <div class="insight-bucket-header">
+                <span class="insight-bucket-title">${escapeHtml(bucket.label)}</span>
+                <span class="insight-bucket-count">${bucket.total || 0}개</span>
+            </div>
+            <div class="insight-card-list">
+                ${(bucket.items || []).length ? bucket.items.map(renderInsightCard).join("") : `<div class="insight-empty">아직 후보가 없습니다.</div>`}
+            </div>
+        </div>
+    `).join("");
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightJudgment(btn));
+    });
+}
+
+function renderInsightCard(item) {
+    const source = item.source_name || item.category || "-";
+    const dateText = item.published_at
+        ? `발행 ${formatDate(item.published_at)}`
+        : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
+    return `
+        <article class="insight-card">
+            <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
+            <div class="insight-card-meta">
+                <span>${escapeHtml(source)}</span>
+                <span>${escapeHtml(dateText)}</span>
+                <span>${item.analysis_status === "pending" ? "AI 요약 대기" : "요약 완료"}</span>
+            </div>
+            <div class="insight-card-score">
+                <span>점수 ${Number(item.score || 0)}</span>
+                <span>확신도 ${Number(item.confidence || 0)}</span>
+            </div>
+            <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
+            <div class="insight-card-actions">
+                <button class="insight-action-btn" data-label="approve" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}" data-bucket="${item.primary_bucket}">승인</button>
+                <button class="insight-action-btn" data-label="report_candidate" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">보고서 후보</button>
+                <button class="insight-action-btn noise" data-label="noise" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">노이즈</button>
+            </div>
+        </article>
+    `;
+}
+
+function resolveApprovedLabel(bucket) {
+    const mapping = {
+        strategy_report: "report_candidate",
+        watch_competitor: "watch_competitor",
+        product_idea: "product_idea",
+        rfp_evidence: "rfp_evidence",
+        likely_noise: "noise"
+    };
+    return mapping[bucket] || "important";
+}
+
+async function handleInsightJudgment(btn) {
+    if (!currentProfileId) return;
+    const requestedLabel = btn.getAttribute("data-label");
+    const bucket = btn.getAttribute("data-bucket");
+    const label = requestedLabel === "approve" ? resolveApprovedLabel(bucket) : requestedLabel;
+    const payload = {
+        profile_id: currentProfileId,
+        ai_review_id: Number(btn.getAttribute("data-review-id")),
+        item_type: btn.getAttribute("data-item-type"),
+        item_id: Number(btn.getAttribute("data-item-id")),
+        label,
+        note: requestedLabel === "approve" ? "AI 후보 분류 승인" : ""
+    };
+
+    btn.setAttribute("disabled", "true");
+    const originalText = btn.textContent;
+    btn.textContent = "저장";
+
+    try {
+        const res = await fetch("/api/editor/judgments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "판정 저장 실패");
+        }
+        btn.textContent = "완료";
+        setTimeout(() => loadInsightCandidates(), 400);
+    } catch (e) {
+        btn.textContent = originalText;
+        btn.removeAttribute("disabled");
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `판정 저장 실패: ${e.message}`;
+        }
     }
 }
 
