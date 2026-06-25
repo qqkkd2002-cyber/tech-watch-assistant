@@ -347,6 +347,8 @@ function setupTabNavigation() {
                 loadReports();
             } else if (tabId === "board") {
                 loadBoardPosts();
+            } else if (tabId === "candidate-review") {
+                loadInsightCandidates();
             } else if (tabId === "dashboard-competitor" || tabId === "dashboard-trend") {
                 loadDashboardStats();
             }
@@ -932,6 +934,8 @@ function onProfileChanged() {
         loadStarredFeeds();
     } else if (activeTab === "reports") {
         loadReports();
+    } else if (activeTab === "candidate-review") {
+        loadInsightCandidates();
     } else if (activeTab === "dashboard-competitor" || activeTab === "dashboard-trend") {
         loadDashboardStats();
     }
@@ -2918,9 +2922,6 @@ async function loadDashboardStats() {
         // 5b. Technical Trends Latest News Widget
         renderTrendLatestWidget(stats.latest_trends);
 
-        // 6. TWT v2 insight candidate buckets
-        loadInsightCandidates();
-
     } catch (e) {
         console.error("Error loading dashboard stats:", e);
     }
@@ -2982,26 +2983,32 @@ async function loadInsightCandidates() {
 
 function renderInsightCandidates(data) {
     if (!DOM.insightCandidateBuckets) return;
-    const buckets = data?.buckets || [];
-    const total = data?.total_active_reviews || 0;
+    const reviewQueue = (data?.buckets || []).find(bucket => bucket.bucket === "review_queue") || {
+        bucket: "review_queue",
+        label: "검토 대기",
+        total: 0,
+        items: [],
+    };
+    const pendingTotal = reviewQueue.total || 0;
+    const visibleCount = (reviewQueue.items || []).length;
 
     if (DOM.insightCandidateStatus) {
-        DOM.insightCandidateStatus.textContent = total
-            ? `AI가 정리한 활성 후보 ${total}개가 있습니다. 검토 대기에서 인사이트와 노이즈를 골라주세요.`
-            : "아직 정리된 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 분류하세요.";
+        DOM.insightCandidateStatus.textContent = pendingTotal
+            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.`
+            : "처리할 검토 대기 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 새로 올리세요.";
     }
 
-    DOM.insightCandidateBuckets.innerHTML = buckets.map(bucket => `
-        <div class="insight-bucket" data-bucket="${escapeHtml(bucket.bucket)}">
+    DOM.insightCandidateBuckets.innerHTML = `
+        <div class="insight-bucket review-workbench" data-bucket="${escapeHtml(reviewQueue.bucket)}">
             <div class="insight-bucket-header">
-                <span class="insight-bucket-title">${escapeHtml(bucket.label)}</span>
-                <span class="insight-bucket-count">${bucket.total || 0}개</span>
+                <span class="insight-bucket-title">${escapeHtml(reviewQueue.label)}</span>
+                <span class="insight-bucket-count">${pendingTotal}개</span>
             </div>
             <div class="insight-card-list">
-                ${(bucket.items || []).length ? bucket.items.map(renderInsightCard).join("") : `<div class="insight-empty">아직 후보가 없습니다.</div>`}
+                ${(reviewQueue.items || []).length ? reviewQueue.items.map(renderInsightCard).join("") : `<div class="insight-empty">처리할 후보가 없습니다. 확정한 인사이트는 대시보드와 원장에 계속 남습니다.</div>`}
             </div>
         </div>
-    `).join("");
+    `;
 
     DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightJudgment(btn));
@@ -3041,7 +3048,7 @@ function renderInsightCard(item) {
         ? `<button class="insight-refine-btn" data-review-id="${item.id}">정밀 분류</button>`
         : "";
     return `
-        <article class="insight-card" draggable="true" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
+        <article class="insight-card" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
             <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
             ${tagHtml}
             <div class="insight-card-meta">

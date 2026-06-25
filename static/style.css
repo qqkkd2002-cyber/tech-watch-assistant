@@ -3305,6 +3305,20 @@ body {
     transition: border-color var(--transition-speed), background-color var(--transition-speed), box-shadow var(--transition-speed);
 }
 
+.insight-bucket.review-workbench {
+    grid-column: 1 / -1;
+}
+
+.insight-bucket.review-workbench .insight-card-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    align-items: start;
+}
+
+.insight-bucket.review-workbench .insight-card {
+    cursor: default;
+}
+
 .insight-bucket.is-drag-over {
     border-color: rgba(0, 242, 254, 0.55);
     background: rgba(0, 242, 254, 0.055);
