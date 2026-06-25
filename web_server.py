@@ -105,6 +105,12 @@ class EditorReviewGeneratePayload(BaseModel):
     limit: int = 80
     force: bool = False
 
+class EditorReviewMovePayload(BaseModel):
+    profile_id: int
+    ai_review_id: int
+    target_bucket: str
+    note: str = ""
+
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
     seed_keyword: str = ""
@@ -987,6 +993,35 @@ async def api_generate_editor_reviews(payload: EditorReviewGeneratePayload):
         force=payload.force
     )
     return {"success": True, "created": len(reviews), "reviews": reviews}
+
+@app.post("/api/editor/reviews/move")
+async def api_move_editor_review(payload: EditorReviewMovePayload):
+    """Moves an active AI candidate card to a different editorial bucket."""
+    try:
+        moved = database.move_ai_editor_review(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            target_bucket=payload.target_bucket,
+            note=payload.note
+        )
+        label = {
+            "strategy_report": "report_candidate",
+            "watch_competitor": "watch_competitor",
+            "product_idea": "product_idea",
+            "rfp_evidence": "rfp_evidence",
+            "likely_noise": "noise"
+        }.get(payload.target_bucket, "important")
+        judgment = database.save_editor_judgment(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            item_type=moved["item_type"],
+            item_id=moved["item_id"],
+            label=label,
+            note=payload.note or "드래그로 후보 카테고리 수정"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "review": moved, "judgment": judgment}
 
 @app.post("/api/editor/judgments")
 async def api_save_editor_judgment(payload: EditorJudgmentPayload):

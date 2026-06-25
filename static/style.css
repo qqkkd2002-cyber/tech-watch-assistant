@@ -3109,6 +3109,13 @@ body {
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.018);
     padding: 14px;
+    transition: border-color var(--transition-speed), background-color var(--transition-speed), box-shadow var(--transition-speed);
+}
+
+.insight-bucket.is-drag-over {
+    border-color: rgba(0, 242, 254, 0.55);
+    background: rgba(0, 242, 254, 0.055);
+    box-shadow: inset 0 0 0 1px rgba(0, 242, 254, 0.16);
 }
 
 .insight-bucket-header {
@@ -3145,6 +3152,18 @@ body {
     border-radius: 8px;
     background: rgba(8, 11, 17, 0.55);
     padding: 12px;
+    cursor: grab;
+    transition: border-color var(--transition-speed), opacity var(--transition-speed), transform var(--transition-speed);
+}
+
+.insight-card:hover {
+    border-color: rgba(0, 242, 254, 0.22);
+}
+
+.insight-card.is-dragging {
+    opacity: 0.55;
+    cursor: grabbing;
+    transform: scale(0.98);
 }
 
 .insight-card-title {

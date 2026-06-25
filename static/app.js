@@ -2996,6 +2996,7 @@ function renderInsightCandidates(data) {
     DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightJudgment(btn));
     });
+    setupInsightDragAndDrop();
 }
 
 function renderInsightCard(item) {
@@ -3004,7 +3005,7 @@ function renderInsightCard(item) {
         ? `발행 ${formatDate(item.published_at)}`
         : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
     return `
-        <article class="insight-card">
+        <article class="insight-card" draggable="true" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
             <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
             <div class="insight-card-meta">
                 <span>${escapeHtml(source)}</span>
@@ -3023,6 +3024,76 @@ function renderInsightCard(item) {
             </div>
         </article>
     `;
+}
+
+function setupInsightDragAndDrop() {
+    if (!DOM.insightCandidateBuckets) return;
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-card").forEach(card => {
+        card.addEventListener("dragstart", (e) => {
+            card.classList.add("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", card.getAttribute("data-review-id") || "");
+        });
+        card.addEventListener("dragend", () => {
+            card.classList.remove("is-dragging");
+            DOM.insightCandidateBuckets.querySelectorAll(".insight-bucket").forEach(bucket => {
+                bucket.classList.remove("is-drag-over");
+            });
+        });
+    });
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-bucket").forEach(bucket => {
+        bucket.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            bucket.classList.add("is-drag-over");
+            e.dataTransfer.dropEffect = "move";
+        });
+        bucket.addEventListener("dragleave", (e) => {
+            if (!bucket.contains(e.relatedTarget)) {
+                bucket.classList.remove("is-drag-over");
+            }
+        });
+        bucket.addEventListener("drop", (e) => {
+            e.preventDefault();
+            bucket.classList.remove("is-drag-over");
+            const reviewId = Number(e.dataTransfer.getData("text/plain"));
+            const targetBucket = bucket.getAttribute("data-bucket");
+            const card = DOM.insightCandidateBuckets.querySelector(`.insight-card[data-review-id="${reviewId}"]`);
+            const currentBucket = card?.getAttribute("data-current-bucket");
+            if (!reviewId || !targetBucket || targetBucket === currentBucket) return;
+            handleInsightCardMove(reviewId, targetBucket, currentBucket);
+        });
+    });
+}
+
+async function handleInsightCardMove(aiReviewId, targetBucket, currentBucket) {
+    if (!currentProfileId) return;
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "카테고리 이동을 저장하고 있습니다.";
+    }
+
+    try {
+        const res = await fetch("/api/editor/reviews/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                ai_review_id: aiReviewId,
+                target_bucket: targetBucket,
+                note: `드래그 이동: ${currentBucket || "unknown"} -> ${targetBucket}`
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "카테고리 이동 저장 실패");
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `카테고리 이동 실패: ${e.message}`;
+        }
+    }
 }
 
 function resolveApprovedLabel(bucket) {

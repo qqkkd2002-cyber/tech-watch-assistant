@@ -1415,6 +1415,46 @@ def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review:
     finally:
         conn.close()
 
+def move_ai_editor_review(profile_id: int, ai_review_id: int, target_bucket: str, note: str = "") -> Dict[str, Any]:
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id)
+        )
+        review = cursor.fetchone()
+        if not review:
+            raise ValueError("Active AI review not found.")
+
+        old_bucket = review["primary_bucket"]
+        move_note = note or f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 {BUCKET_LABELS.get(target_bucket, target_bucket)}로 이동"
+        reason = review["reason"] or ""
+        if old_bucket != target_bucket:
+            reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (target_bucket, reason, ai_review_id, profile_id)
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
 def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool = False) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit or 80), 150))
     conn = get_db_connection()
