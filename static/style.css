@@ -2638,9 +2638,23 @@ body {
     margin-bottom: 18px;
 }
 
+.intro-feature-grid.five-step {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    align-items: stretch;
+}
+
+.intro-feature-grid.five-step .intro-feature-card {
+    grid-column: span 2;
+}
+
+.intro-feature-grid.five-step .intro-feature-card.editor,
+.intro-feature-grid.five-step .intro-feature-card.asset {
+    grid-column: span 3;
+}
+
 .intro-feature-card {
     position: relative;
-    min-height: 156px;
+    min-height: 182px;
     border: 1px solid rgba(255, 255, 255, 0.09);
     border-radius: 10px;
     padding: 22px 24px;
@@ -2653,9 +2667,24 @@ body {
     background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(15, 23, 42, 0.36));
 }
 
+.intro-feature-card.sort {
+    border-left: 5px solid #38bdf8;
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.11), rgba(15, 23, 42, 0.36));
+}
+
+.intro-feature-card.summary {
+    border-left: 5px solid #22c55e;
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.10), rgba(15, 23, 42, 0.36));
+}
+
+.intro-feature-card.editor {
+    border-left: 5px solid #fbbf24;
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.11), rgba(15, 23, 42, 0.36));
+}
+
 .intro-feature-card.asset {
-    border-left: 5px solid var(--color-accent);
-    background: linear-gradient(135deg, rgba(0, 242, 254, 0.10), rgba(15, 23, 42, 0.36));
+    border-left: 5px solid #fb7185;
+    background: linear-gradient(135deg, rgba(251, 113, 133, 0.11), rgba(15, 23, 42, 0.36));
 }
 
 .feature-step {
@@ -2685,6 +2714,7 @@ body {
     font-size: 13px;
     line-height: 1.65;
     margin: 0 0 15px;
+    min-height: 64px;
 }
 
 .feature-tags {
@@ -3524,6 +3554,16 @@ body {
     .intro-feature-grid,
     .guide-value-grid {
         grid-template-columns: 1fr;
+    }
+
+    .intro-feature-grid.five-step .intro-feature-card,
+    .intro-feature-grid.five-step .intro-feature-card.editor,
+    .intro-feature-grid.five-step .intro-feature-card.asset {
+        grid-column: span 1;
+    }
+
+    .intro-feature-card p {
+        min-height: 0;
     }
 
     .guide-flow-strip div:not(:last-child)::after {
