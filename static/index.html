@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260626-v2-work-learning-signals">
+    <link rel="stylesheet" href="style.css?v=20260626-v2-starred-reasons">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -310,8 +310,14 @@
                             <span class="search-icon">🔍</span>
                             <input type="text" id="starred-search" placeholder="보관함 내 검색...">
                         </div>
+                        <div class="feed-filters" id="starred-reason-filters">
+                            <button class="starred-reason-filter-btn filter-btn active" data-reason-filter="all">전체</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="work_signal">업무 신호</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="learning_signal">학습 신호</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="manual">수동 저장</button>
+                        </div>
                         <div class="feed-filters" id="starred-feed-filters">
-                            <button class="starred-filter-btn filter-btn active" data-filter="all">전체</button>
+                            <button class="starred-filter-btn filter-btn active" data-filter="all">전체 출처</button>
                             <button class="starred-filter-btn filter-btn" data-filter="docs">경쟁사 문서</button>
                             <button class="starred-filter-btn filter-btn" data-filter="references">기술 레퍼런스</button>
                             <button class="starred-filter-btn filter-btn" data-filter="trends">키워드 뉴스</button>
@@ -322,7 +328,7 @@
 
                 <div class="folder-filters-row" id="starred-folder-filters" style="display: none; justify-content: space-between; align-items: center;">
                     <div class="folder-chips-list" id="starred-folder-chips" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
-                    <div class="folder-group-toggle" id="starred-group-toggle-container" style="display: flex; align-items: center; gap: 6px;">
+                    <div class="folder-group-toggle" id="starred-group-toggle-container" style="display: none; align-items: center; gap: 6px;">
                         <input type="checkbox" id="starred-group-by-folder" class="custom-checkbox">
                         <label for="starred-group-by-folder" style="font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;">📁 폴더별 모아보기</label>
                     </div>
@@ -335,17 +341,17 @@
                         <p>후보 정리에서 업무 신호·학습 신호로 확정하거나, 수집 원장에서 별표(★)를 눌러 여기에 추가해 보세요.</p>
                     </div>
                     <div class="feed-columns-container" id="starred-items-grid">
-                        <div class="feed-column" id="starred-col-competitor">
-                            <div class="column-header">🏢 경쟁사 업데이트 <span class="count-badge" id="starred-count-competitor">0</span></div>
-                            <div class="column-items" id="starred-items-competitor"></div>
+                        <div class="feed-column" id="starred-col-work">
+                            <div class="column-header">💼 업무 신호 <span class="count-badge" id="starred-count-work">0</span></div>
+                            <div class="column-items" id="starred-items-work"></div>
                         </div>
-                        <div class="feed-column" id="starred-col-reference">
-                            <div class="column-header">📚 기술 레퍼런스 <span class="count-badge" id="starred-count-reference">0</span></div>
-                            <div class="column-items" id="starred-items-reference"></div>
+                        <div class="feed-column" id="starred-col-learning">
+                            <div class="column-header">🧠 학습 신호 <span class="count-badge" id="starred-count-learning">0</span></div>
+                            <div class="column-items" id="starred-items-learning"></div>
                         </div>
-                        <div class="feed-column" id="starred-col-trend">
-                            <div class="column-header">🔥 기술 트렌드 뉴스 <span class="count-badge" id="starred-count-trend">0</span></div>
-                            <div class="column-items" id="starred-items-trend"></div>
+                        <div class="feed-column" id="starred-col-manual">
+                            <div class="column-header">⭐ 수동 저장 <span class="count-badge" id="starred-count-manual">0</span></div>
+                            <div class="column-items" id="starred-items-manual"></div>
                         </div>
                     </div>
                 </div>
@@ -1134,6 +1140,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260626-v2-work-learning-signals"></script>
+    <script src="app.js?v=20260626-v2-starred-reasons"></script>
 </body>
 </html>

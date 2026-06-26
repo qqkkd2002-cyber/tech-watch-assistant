@@ -831,27 +831,39 @@ def reset_pending_retry_count(profile_id: int):
 def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False, match_mode: str = "any", doc_type: str = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    conditions = ["profile_id = ?"]
+    conditions = ["d.profile_id = ?"]
     params = [profile_id]
     if starred_only:
-        conditions.append("is_starred = 1")
+        conditions.append("d.is_starred = 1")
     if doc_type:
-        conditions.append("doc_type = ?")
+        conditions.append("d.doc_type = ?")
         params.append(doc_type)
     keywords = [k.strip() for k in search.split(",") if k.strip()]
     if keywords:
         keyword_clauses = []
         for keyword in keywords:
-            keyword_clauses.append("(title LIKE ? OR competitor LIKE ? OR summary LIKE ? OR keywords LIKE ?)")
+            keyword_clauses.append("(d.title LIKE ? OR d.competitor LIKE ? OR d.summary LIKE ? OR d.keywords LIKE ?)")
             like = f"%{keyword}%"
             params.extend([like, like, like, like])
         joiner = " AND " if match_mode == "all" else " OR "
         conditions.append("(" + joiner.join(keyword_clauses) + ")")
     params.extend([limit, offset])
     cursor.execute(
-        f"""SELECT * FROM scanned_docs
+        f"""SELECT d.*,
+                  ar.primary_bucket AS editor_bucket,
+                  CASE
+                      WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
+                      WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                      ELSE 'manual'
+                  END AS star_reason
+           FROM scanned_docs d
+           LEFT JOIN ai_editor_reviews ar
+             ON ar.profile_id = d.profile_id
+            AND ar.item_type = 'doc'
+            AND ar.item_id = d.id
+            AND ar.is_active = 1
            WHERE {' AND '.join(conditions)}
-           ORDER BY COALESCE(NULLIF(published_at, ''), created_at) DESC LIMIT ? OFFSET ?""",
+           ORDER BY COALESCE(NULLIF(d.published_at, ''), d.created_at) DESC LIMIT ? OFFSET ?""",
         params
     )
     rows = cursor.fetchall()
@@ -861,20 +873,35 @@ def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = ""
 def get_trends(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    star_cond = " AND is_starred = 1" if starred_only else ""
+    star_cond = " AND t.is_starred = 1" if starred_only else ""
+    select_sql = """SELECT t.*,
+                           k.folder,
+                           ar.primary_bucket AS editor_bucket,
+                           CASE
+                               WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
+                               WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                               ELSE 'manual'
+                           END AS star_reason
+                    FROM scanned_trends t
+                    LEFT JOIN profile_keywords k
+                      ON t.profile_id = k.profile_id
+                     AND t.keyword = k.keyword
+                    LEFT JOIN ai_editor_reviews ar
+                      ON ar.profile_id = t.profile_id
+                     AND ar.item_type = 'trend'
+                     AND ar.item_id = t.id
+                     AND ar.is_active = 1"""
     if search:
         query = f"%{search}%"
         cursor.execute(
-            f"""SELECT t.*, k.folder FROM scanned_trends t
-               LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+            f"""{select_sql}
                WHERE t.profile_id = ?{star_cond} AND (t.title LIKE ? OR t.keyword LIKE ? OR t.summary LIKE ? OR t.source LIKE ?) 
                ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ? OFFSET ?""",
             (profile_id, query, query, query, query, limit, offset)
         )
     else:
         cursor.execute(
-            f"""SELECT t.*, k.folder FROM scanned_trends t
-               LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+            f"""{select_sql}
                WHERE t.profile_id = ?{star_cond} ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ? OFFSET ?""",
             (profile_id, limit, offset)
         )

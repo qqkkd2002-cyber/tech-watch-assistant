@@ -46,6 +46,22 @@ function updateFolderChips(chipsContainer, rowContainer, uniqueFolders, activeFo
     rowContainer.style.display = "flex";
 }
 
+function getStarredReason(item) {
+    if (item.star_reason === "work_signal" || item.editor_bucket === "work_signal") {
+        return "work_signal";
+    }
+    if (item.star_reason === "learning_signal" || item.editor_bucket === "learning_signal") {
+        return "learning_signal";
+    }
+    return "manual";
+}
+
+function getStarredReasonLabel(reason) {
+    if (reason === "work_signal") return "업무 신호";
+    if (reason === "learning_signal") return "학습 신호";
+    return "수동 저장";
+}
+
 function createFeedCard(item, tabType) {
     const card = document.createElement("div");
     
@@ -67,6 +83,10 @@ function createFeedCard(item, tabType) {
         
     const itemType = item.type === "doc" ? "doc" : "trend";
     const isAnalysisPending = item.analysis_status === "pending";
+    const starReason = tabType === "starred" ? getStarredReason(item) : "";
+    const starReasonBadge = tabType === "starred"
+        ? `<span class="badge badge-star-reason reason-${starReason}">${getStarredReasonLabel(starReason)}</span>`
+        : "";
     let pendingBadge = "";
     if (isAnalysisPending) {
         if (item.retry_count >= 5) {
@@ -131,9 +151,10 @@ function createFeedCard(item, tabType) {
         <div class="card-compact-header">
             <div class="card-compact-meta">
                 ${badgeHtml}
+                ${starReasonBadge}
                 ${pendingBadge}
             </div>
-            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" title="${starTitle}">★</button>
+            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" data-star-reason="${starReason}" title="${starTitle}">★</button>
         </div>
         <a href="${escapeHtml(item.link)}" target="_blank" class="card-compact-title">${escapeHtml(item.title)}</a>
         <div class="card-compact-dates">
@@ -170,7 +191,8 @@ const DOM = {
     
     // Starred
     starredSearch: document.getElementById("starred-search"),
-    starredFilterBtns: document.querySelectorAll("#starred-tab .filter-btn"),
+    starredFilterBtns: document.querySelectorAll("#starred-feed-filters .filter-btn"),
+    starredReasonFilterBtns: document.querySelectorAll("#starred-reason-filters .filter-btn"),
     starredItemsGrid: document.getElementById("starred-items-grid"),
     starredEmpty: document.getElementById("starred-empty"),
     compileStarredReportBtn: document.getElementById("compile-starred-report-btn"),
@@ -543,6 +565,14 @@ function setupEventListeners() {
     DOM.starredFilterBtns.forEach(btn => {
         btn.addEventListener("click", () => {
             DOM.starredFilterBtns.forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            loadStarredFeeds();
+        });
+    });
+
+    DOM.starredReasonFilterBtns.forEach(btn => {
+        btn.addEventListener("click", () => {
+            DOM.starredReasonFilterBtns.forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
             loadStarredFeeds();
         });
@@ -1902,7 +1932,8 @@ async function loadStarredFeeds() {
     if (!currentProfileId) return;
     
     const search = DOM.starredSearch.value.trim();
-    const activeFilter = document.querySelector("#starred-tab .filter-btn.active").getAttribute("data-filter");
+    const activeFilter = document.querySelector("#starred-feed-filters .filter-btn.active")?.getAttribute("data-filter") || "all";
+    const activeReasonFilter = document.querySelector("#starred-reason-filters .filter-btn.active")?.getAttribute("data-reason-filter") || "all";
     
     // Manage folder filter visibility and state
     const profile = profiles.find(p => p.id === currentProfileId);
@@ -1951,151 +1982,84 @@ async function loadStarredFeeds() {
         trends.forEach(t => items.push({ ...t, type: 'trend' }));
         
         items.sort((a, b) => getFeedSortTime(b) - getFeedSortTime(a));
+
+        if (activeReasonFilter !== "all") {
+            items = items.filter(item => getStarredReason(item) === activeReasonFilter);
+        }
         
         // Clear all column containers
-        const colComp = document.getElementById("starred-items-competitor");
-        const colRef = document.getElementById("starred-items-reference");
-        const colTrend = document.getElementById("starred-items-trend");
-        if (colComp) colComp.innerHTML = "";
-        if (colRef) colRef.innerHTML = "";
-        if (colTrend) colTrend.innerHTML = "";
+        const colWork = document.getElementById("starred-items-work");
+        const colLearning = document.getElementById("starred-items-learning");
+        const colManual = document.getElementById("starred-items-manual");
+        if (colWork) colWork.innerHTML = "";
+        if (colLearning) colLearning.innerHTML = "";
+        if (colManual) colManual.innerHTML = "";
         
         if (items.length === 0) {
             DOM.starredEmpty.style.display = "block";
             
             // Clear counts
-            const badgeComp = document.getElementById("starred-count-competitor");
-            const badgeRef = document.getElementById("starred-count-reference");
-            const badgeTrend = document.getElementById("starred-count-trend");
-            if (badgeComp) badgeComp.textContent = 0;
-            if (badgeRef) badgeRef.textContent = 0;
-            if (badgeTrend) badgeTrend.textContent = 0;
+            const badgeWork = document.getElementById("starred-count-work");
+            const badgeLearning = document.getElementById("starred-count-learning");
+            const badgeManual = document.getElementById("starred-count-manual");
+            if (badgeWork) badgeWork.textContent = 0;
+            if (badgeLearning) badgeLearning.textContent = 0;
+            if (badgeManual) badgeManual.textContent = 0;
             return;
         }
         
         DOM.starredEmpty.style.display = "none";
         
-        let compCount = 0;
-        let refCount = 0;
-        let trendCount = 0;
+        let workCount = 0;
+        let learningCount = 0;
+        let manualCount = 0;
         
-        const groupByFolder = activeFilter === "trends" && DOM.starredGroupByFolder && DOM.starredGroupByFolder.checked;
-        
-        if (groupByFolder) {
-            // Group trend items by folder
-            const groups = {};
-            items.forEach(item => {
-                let cardType = item.type;
-                if (item.type === "doc" && item.doc_type === "reference") {
-                    cardType = "reference";
-                }
-                
-                if (cardType === "trend") {
-                    const folder = item.folder || "미분류";
-                    if (!groups[folder]) {
-                        groups[folder] = [];
-                    }
-                    groups[folder].push(item);
-                    trendCount++;
-                } else if (cardType === "doc") {
-                    if (colComp) {
-                        const card = createFeedCard(item, "starred");
-                        colComp.appendChild(card);
-                        compCount++;
-                    }
-                } else if (cardType === "reference") {
-                    if (colRef) {
-                        const card = createFeedCard(item, "starred");
-                        colRef.appendChild(card);
-                        refCount++;
-                    }
-                }
-            });
+        items.forEach(item => {
+            const card = createFeedCard(item, "starred");
+            const reason = getStarredReason(item);
             
-            const folderNames = Object.keys(groups).sort((a, b) => {
-                if (a === "미분류") return 1;
-                if (b === "미분류") return -1;
-                return a.localeCompare(b);
-            });
-            
-            folderNames.forEach(folderName => {
-                const groupItems = groups[folderName];
-                
-                const header = document.createElement("div");
-                header.className = "feed-group-section-header";
-                header.innerHTML = `
-                    <span class="folder-icon">📁</span>
-                    <span>${escapeHtml(folderName)}</span>
-                    <span class="folder-count">(${groupItems.length})</span>
-                `;
-                if (colTrend) colTrend.appendChild(header);
-                
-                groupItems.forEach(item => {
-                    const card = createFeedCard(item, "starred");
-                    if (colTrend) colTrend.appendChild(card);
-                });
-            });
-        } else {
-            // Normal 3-column chronological distribution
-            items.forEach(item => {
-                const card = createFeedCard(item, "starred");
-                
-                let cardType = item.type;
-                if (item.type === "doc" && item.doc_type === "reference") {
-                    cardType = "reference";
-                }
-                
-                if (cardType === "doc") {
-                    if (colComp) {
-                        colComp.appendChild(card);
-                        compCount++;
-                    }
-                } else if (cardType === "reference") {
-                    if (colRef) {
-                        colRef.appendChild(card);
-                        refCount++;
-                    }
-                } else {
-                    if (colTrend) {
-                        colTrend.appendChild(card);
-                        trendCount++;
-                    }
-                }
-            });
-        }
+            if (reason === "work_signal") {
+                if (colWork) colWork.appendChild(card);
+                workCount++;
+            } else if (reason === "learning_signal") {
+                if (colLearning) colLearning.appendChild(card);
+                learningCount++;
+            } else {
+                if (colManual) colManual.appendChild(card);
+                manualCount++;
+            }
+        });
         
         // Update count badges
-        const badgeComp = document.getElementById("starred-count-competitor");
-        const badgeRef = document.getElementById("starred-count-reference");
-        const badgeTrend = document.getElementById("starred-count-trend");
-        if (badgeComp) badgeComp.textContent = compCount;
-        if (badgeRef) badgeRef.textContent = refCount;
-        if (badgeTrend) badgeTrend.textContent = trendCount;
+        const badgeWork = document.getElementById("starred-count-work");
+        const badgeLearning = document.getElementById("starred-count-learning");
+        const badgeManual = document.getElementById("starred-count-manual");
+        if (badgeWork) badgeWork.textContent = workCount;
+        if (badgeLearning) badgeLearning.textContent = learningCount;
+        if (badgeManual) badgeManual.textContent = manualCount;
         
-        // Apply hidden/expanded classes on column wrappers based on activeFilter
-        const wrapComp = document.getElementById("starred-col-competitor");
-        const wrapRef = document.getElementById("starred-col-reference");
-        const wrapTrend = document.getElementById("starred-col-trend");
+        // Apply hidden/expanded classes on column wrappers based on reason filter
+        const wrapWork = document.getElementById("starred-col-work");
+        const wrapLearning = document.getElementById("starred-col-learning");
+        const wrapManual = document.getElementById("starred-col-manual");
         
-        if (wrapComp && wrapRef && wrapTrend) {
-            wrapComp.className = "feed-column";
-            wrapRef.className = "feed-column";
-            wrapTrend.className = "feed-column";
+        if (wrapWork && wrapLearning && wrapManual) {
+            wrapWork.className = "feed-column";
+            wrapLearning.className = "feed-column";
+            wrapManual.className = "feed-column";
             
-            if (activeFilter === "all") {
-                // Keep default 3-column layout
-            } else if (activeFilter === "docs") {
-                wrapComp.classList.add("expanded-col");
-                wrapRef.classList.add("hidden-col");
-                wrapTrend.classList.add("hidden-col");
-            } else if (activeFilter === "references") {
-                wrapRef.classList.add("expanded-col");
-                wrapComp.classList.add("hidden-col");
-                wrapTrend.classList.add("hidden-col");
-            } else if (activeFilter === "trends") {
-                wrapTrend.classList.add("expanded-col");
-                wrapComp.classList.add("hidden-col");
-                wrapRef.classList.add("hidden-col");
+            if (activeReasonFilter === "work_signal") {
+                wrapWork.classList.add("expanded-col");
+                wrapLearning.classList.add("hidden-col");
+                wrapManual.classList.add("hidden-col");
+            } else if (activeReasonFilter === "learning_signal") {
+                wrapLearning.classList.add("expanded-col");
+                wrapWork.classList.add("hidden-col");
+                wrapManual.classList.add("hidden-col");
+            } else if (activeReasonFilter === "manual") {
+                wrapManual.classList.add("expanded-col");
+                wrapWork.classList.add("hidden-col");
+                wrapLearning.classList.add("hidden-col");
             }
         }
   
@@ -2108,6 +2072,12 @@ async function loadStarredFeeds() {
                 
                 const itemId = btn.getAttribute("data-id");
                 const itemType = btn.getAttribute("data-type");
+                const starReason = btn.getAttribute("data-star-reason");
+                
+                if (starReason === "work_signal" || starReason === "learning_signal") {
+                    alert("후보 정리에서 확정한 신호입니다. 보관함에서 빼려면 후보 정리에서 보류나 노이즈로 바꿔주세요.");
+                    return;
+                }
                 
                 try {
                     const endpoint = itemType === "doc" ? `/api/docs/${itemId}/star` : `/api/trends/${itemId}/star`;

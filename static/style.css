@@ -423,6 +423,28 @@ body {
     border: 1px solid rgba(245, 158, 11, 0.22);
 }
 
+.badge-star-reason {
+    border: 1px solid transparent;
+}
+
+.badge-star-reason.reason-work_signal {
+    background-color: rgba(20, 184, 166, 0.14);
+    border-color: rgba(20, 184, 166, 0.28);
+    color: #5eead4;
+}
+
+.badge-star-reason.reason-learning_signal {
+    background-color: rgba(99, 102, 241, 0.15);
+    border-color: rgba(129, 140, 248, 0.28);
+    color: #a5b4fc;
+}
+
+.badge-star-reason.reason-manual {
+    background-color: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.28);
+    color: #fbbf24;
+}
+
 .card-date-block {
     display: flex;
     flex-wrap: wrap;
