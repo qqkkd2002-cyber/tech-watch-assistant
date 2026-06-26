@@ -235,6 +235,9 @@ def init_db():
     doc_cols = [row['name'] for row in cursor.fetchall()]
     if 'is_starred' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN is_starred INTEGER DEFAULT 0")
+    if 'manual_saved' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN manual_saved INTEGER DEFAULT 0")
+        cursor.execute("UPDATE scanned_docs SET manual_saved = COALESCE(is_starred, 0)")
     if 'published_at' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN published_at TEXT DEFAULT ''")
     if 'analysis_status' not in doc_cols:
@@ -249,6 +252,9 @@ def init_db():
     trend_cols = [row['name'] for row in cursor.fetchall()]
     if 'is_starred' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN is_starred INTEGER DEFAULT 0")
+    if 'manual_saved' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN manual_saved INTEGER DEFAULT 0")
+        cursor.execute("UPDATE scanned_trends SET manual_saved = COALESCE(is_starred, 0)")
     if 'published_at' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN published_at TEXT DEFAULT ''")
     if 'analysis_status' not in trend_cols:
@@ -258,12 +264,13 @@ def init_db():
     if 'retry_count' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN retry_count INTEGER DEFAULT 0")
 
-    # Keep the archive aligned with editor decisions:
-    # confirmed work/learning signals are important, noise is not.
+    # Keep legacy is_starred compatible with the archive view.
+    # Manual saves and confirmed work/learning signals are archive-visible.
     cursor.execute("""
         UPDATE scanned_docs
         SET is_starred = 1
-        WHERE id IN (
+        WHERE COALESCE(manual_saved, 0) = 1
+           OR id IN (
             SELECT item_id
             FROM ai_editor_reviews
             WHERE item_type = 'doc'
@@ -274,7 +281,8 @@ def init_db():
     cursor.execute("""
         UPDATE scanned_trends
         SET is_starred = 1
-        WHERE id IN (
+        WHERE COALESCE(manual_saved, 0) = 1
+           OR id IN (
             SELECT item_id
             FROM ai_editor_reviews
             WHERE item_type = 'trend'
@@ -285,24 +293,26 @@ def init_db():
     cursor.execute("""
         UPDATE scanned_docs
         SET is_starred = 0
-        WHERE id IN (
-            SELECT item_id
-            FROM ai_editor_reviews
-            WHERE item_type = 'doc'
-              AND is_active = 1
-              AND primary_bucket = 'noise'
-        )
+        WHERE COALESCE(manual_saved, 0) = 0
+          AND id NOT IN (
+              SELECT item_id
+              FROM ai_editor_reviews
+              WHERE item_type = 'doc'
+                AND is_active = 1
+                AND primary_bucket IN ('work_signal', 'learning_signal')
+          )
     """)
     cursor.execute("""
         UPDATE scanned_trends
         SET is_starred = 0
-        WHERE id IN (
-            SELECT item_id
-            FROM ai_editor_reviews
-            WHERE item_type = 'trend'
-              AND is_active = 1
-              AND primary_bucket = 'noise'
-        )
+        WHERE COALESCE(manual_saved, 0) = 0
+          AND id NOT IN (
+              SELECT item_id
+              FROM ai_editor_reviews
+              WHERE item_type = 'trend'
+                AND is_active = 1
+                AND primary_bucket IN ('work_signal', 'learning_signal')
+          )
     """)
         
     # Alter profile_keywords table to add folder column if missing
@@ -834,7 +844,7 @@ def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = ""
     conditions = ["d.profile_id = ?"]
     params = [profile_id]
     if starred_only:
-        conditions.append("d.is_starred = 1")
+        conditions.append("(COALESCE(d.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))")
     if doc_type:
         conditions.append("d.doc_type = ?")
         params.append(doc_type)
@@ -850,12 +860,19 @@ def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = ""
     params.extend([limit, offset])
     cursor.execute(
         f"""SELECT d.*,
+                  COALESCE(d.manual_saved, 0) AS manual_saved,
                   ar.primary_bucket AS editor_bucket,
                   CASE
                       WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
                       WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                      WHEN COALESCE(d.manual_saved, 0) = 1 THEN 'manual'
                       ELSE 'manual'
-                  END AS star_reason
+                  END AS star_reason,
+                  CASE
+                      WHEN COALESCE(d.manual_saved, 0) = 1
+                           OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                      THEN 1 ELSE 0
+                  END AS archive_saved
            FROM scanned_docs d
            LEFT JOIN ai_editor_reviews ar
              ON ar.profile_id = d.profile_id
@@ -873,15 +890,22 @@ def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = ""
 def get_trends(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    star_cond = " AND t.is_starred = 1" if starred_only else ""
+    star_cond = " AND (COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))" if starred_only else ""
     select_sql = """SELECT t.*,
+                           COALESCE(t.manual_saved, 0) AS manual_saved,
                            k.folder,
                            ar.primary_bucket AS editor_bucket,
                            CASE
                                WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
                                WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                               WHEN COALESCE(t.manual_saved, 0) = 1 THEN 'manual'
                                ELSE 'manual'
-                           END AS star_reason
+                           END AS star_reason,
+                           CASE
+                               WHEN COALESCE(t.manual_saved, 0) = 1
+                                    OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                               THEN 1 ELSE 0
+                           END AS archive_saved
                     FROM scanned_trends t
                     LEFT JOIN profile_keywords k
                       ON t.profile_id = k.profile_id
@@ -933,11 +957,31 @@ def get_profile_stats(profile_id: int) -> Dict[str, Any]:
     total_trends = cursor.fetchone()[0]
     
     # 3. Total starred docs count
-    cursor.execute("SELECT COUNT(*) FROM scanned_docs WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM scanned_docs d
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = d.profile_id
+         AND ar.item_type = 'doc'
+         AND ar.item_id = d.id
+         AND ar.is_active = 1
+        WHERE d.profile_id = ?
+          AND (COALESCE(d.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))
+    """, (profile_id,))
     starred_docs = cursor.fetchone()[0]
     
     # 4. Total starred trends count
-    cursor.execute("SELECT COUNT(*) FROM scanned_trends WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM scanned_trends t
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = t.profile_id
+         AND ar.item_type = 'trend'
+         AND ar.item_id = t.id
+         AND ar.is_active = 1
+        WHERE t.profile_id = ?
+          AND (COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))
+    """, (profile_id,))
     starred_trends = cursor.fetchone()[0]
     
     # 5. Competitor stats (grouped by competitor, filtered by competitor doc_type)
@@ -1354,25 +1398,46 @@ def get_resolved_template_for_profile(profile_id: int) -> str:
 def toggle_doc_star(doc_id: int, is_starred: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (is_starred, doc_id))
+    cursor.execute("UPDATE scanned_docs SET manual_saved = ? WHERE id = ?", (is_starred, doc_id))
     conn.commit()
     conn.close()
+    refresh_item_archive_flag("doc", doc_id)
 
 def toggle_trend_star(trend_id: int, is_starred: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, trend_id))
+    cursor.execute("UPDATE scanned_trends SET manual_saved = ? WHERE id = ?", (is_starred, trend_id))
     conn.commit()
     conn.close()
+    refresh_item_archive_flag("trend", trend_id)
 
-def set_item_starred(item_type: str, item_id: int, is_starred: int):
+def refresh_item_archive_flag(item_type: str, item_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM ai_editor_reviews
+            WHERE item_type = ?
+              AND item_id = ?
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+            LIMIT 1
+            """,
+            (item_type, item_id)
+        )
+        has_editor_signal = cursor.fetchone() is not None
         if item_type == "doc":
-            cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (is_starred, item_id))
+            cursor.execute("SELECT COALESCE(manual_saved, 0) AS manual_saved FROM scanned_docs WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            archive_saved = 1 if (row and int(row["manual_saved"] or 0) == 1) or has_editor_signal else 0
+            cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (archive_saved, item_id))
         elif item_type == "trend":
-            cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, item_id))
+            cursor.execute("SELECT COALESCE(manual_saved, 0) AS manual_saved FROM scanned_trends WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            archive_saved = 1 if (row and int(row["manual_saved"] or 0) == 1) or has_editor_signal else 0
+            cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (archive_saved, item_id))
         else:
             raise ValueError("item_type must be 'doc' or 'trend'")
         conn.commit()
@@ -1380,10 +1445,7 @@ def set_item_starred(item_type: str, item_id: int, is_starred: int):
         conn.close()
 
 def sync_starred_with_editor_label(item_type: str, item_id: int, label: str):
-    if label in ("work_signal", "learning_signal", "important"):
-        set_item_starred(item_type, item_id, 1)
-    elif label == "noise":
-        set_item_starred(item_type, item_id, 0)
+    refresh_item_archive_flag(item_type, item_id)
 
 # --- TWT v2 EDITOR MODE FUNCTIONS ---
 
@@ -1465,6 +1527,17 @@ def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: s
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        if label in ("work_signal", "learning_signal", "noise"):
+            cursor.execute(
+                """
+                DELETE FROM editor_judgments
+                WHERE profile_id = ?
+                  AND item_type = ?
+                  AND item_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                """,
+                (profile_id, item_type, item_id)
+            )
         cursor.execute(
             """
             INSERT INTO editor_judgments (profile_id, ai_review_id, item_type, item_id, label, note)
@@ -1482,6 +1555,52 @@ def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: s
             """,
             (profile_id, item_type, item_id, label)
         )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def update_active_editor_review_bucket_by_item(profile_id: int, item_type: str, item_id: int, target_bucket: str, note: str = "") -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE profile_id = ?
+              AND item_type = ?
+              AND item_id = ?
+              AND is_active = 1
+            LIMIT 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        review = cursor.fetchone()
+        if not review:
+            return {}
+
+        old_bucket = review["primary_bucket"]
+        move_note = note or f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 {BUCKET_LABELS.get(target_bucket, target_bucket)}로 수정"
+        reason = review["reason"] or ""
+        if old_bucket != target_bucket:
+            reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (target_bucket, reason, review["id"], profile_id)
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (review["id"],))
         row = cursor.fetchone()
         return dict(row) if row else {}
     finally:

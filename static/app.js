@@ -72,8 +72,9 @@ function createFeedCard(item, tabType) {
     }
     
     card.className = `feed-card-compact type-${cardType}`;
-    const starClass = item.is_starred ? "active" : "";
-    const starTitle = tabType === "starred" ? "중요 보관함 해제" : "중요 보관함 저장";
+    const isManuallySaved = Number(item.manual_saved ?? item.is_starred ?? 0) === 1;
+    const starClass = isManuallySaved ? "active" : "";
+    const starTitle = isManuallySaved ? "수동 저장 해제" : "수동 저장";
     
     const publishedDate = getPublishedDate(item);
     const collectedDate = formatDateOnly(item.created_at);
@@ -86,6 +87,16 @@ function createFeedCard(item, tabType) {
     const starReason = tabType === "starred" ? getStarredReason(item) : "";
     const starReasonBadge = tabType === "starred"
         ? `<span class="badge badge-star-reason reason-${starReason}">${getStarredReasonLabel(starReason)}</span>`
+        : "";
+    const editorActionsHtml = tabType === "starred"
+        ? `
+            <div class="starred-editor-actions">
+                <span>판단 수정</span>
+                <button class="starred-judgment-btn work" data-label="work_signal" data-id="${item.id}" data-type="${itemType}">업무</button>
+                <button class="starred-judgment-btn learning" data-label="learning_signal" data-id="${item.id}" data-type="${itemType}">학습</button>
+                <button class="starred-judgment-btn noise" data-label="noise" data-id="${item.id}" data-type="${itemType}">노이즈</button>
+            </div>
+        `
         : "";
     let pendingBadge = "";
     if (isAnalysisPending) {
@@ -154,7 +165,7 @@ function createFeedCard(item, tabType) {
                 ${starReasonBadge}
                 ${pendingBadge}
             </div>
-            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" data-star-reason="${starReason}" title="${starTitle}">★</button>
+            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" data-star-reason="${starReason}" data-manual-saved="${isManuallySaved ? "1" : "0"}" title="${starTitle}">★</button>
         </div>
         <a href="${escapeHtml(item.link)}" target="_blank" class="card-compact-title">${escapeHtml(item.title)}</a>
         <div class="card-compact-dates">
@@ -165,6 +176,7 @@ function createFeedCard(item, tabType) {
             ${isAnalysisPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
         </div>
         ${collapsibleHtml}
+        ${editorActionsHtml}
     `;
     
     return card;
@@ -2072,16 +2084,12 @@ async function loadStarredFeeds() {
                 
                 const itemId = btn.getAttribute("data-id");
                 const itemType = btn.getAttribute("data-type");
-                const starReason = btn.getAttribute("data-star-reason");
-                
-                if (starReason === "work_signal" || starReason === "learning_signal") {
-                    alert("후보 정리에서 확정한 신호입니다. 보관함에서 빼려면 후보 정리에서 보류나 노이즈로 바꿔주세요.");
-                    return;
-                }
+                const isManuallySaved = btn.getAttribute("data-manual-saved") === "1";
+                const nextSavedState = !isManuallySaved;
                 
                 try {
                     const endpoint = itemType === "doc" ? `/api/docs/${itemId}/star` : `/api/trends/${itemId}/star`;
-                    const res = await fetch(`${endpoint}?is_starred=false`, { method: "PUT" });
+                    const res = await fetch(`${endpoint}?is_starred=${nextSavedState}`, { method: "PUT" });
                     
                     if (res.ok) {
                         // Re-load starred feeds to refresh counts, grouping and display
@@ -2091,6 +2099,43 @@ async function loadStarredFeeds() {
                     }
                 } catch (err) {
                     console.error("Star toggle error:", err);
+                }
+            });
+        });
+        const judgmentBtns = DOM.starredItemsGrid.querySelectorAll(".starred-judgment-btn");
+        judgmentBtns.forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const itemId = btn.getAttribute("data-id");
+                const itemType = btn.getAttribute("data-type");
+                const label = btn.getAttribute("data-label");
+
+                try {
+                    const res = await fetch("/api/editor/judgments", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            profile_id: currentProfileId,
+                            item_type: itemType,
+                            item_id: Number(itemId),
+                            label,
+                            note: "중요 보관함에서 판단 수정"
+                        })
+                    });
+
+                    if (res.ok) {
+                        await loadStarredFeeds();
+                        await loadInsightCandidates();
+                        await loadDashboardStats();
+                    } else {
+                        const data = await res.json().catch(() => ({}));
+                        alert(data.detail || "판단 수정에 실패했습니다.");
+                    }
+                } catch (err) {
+                    console.error("Starred judgment error:", err);
+                    alert("판단 수정 중 오류가 발생했습니다.");
                 }
             });
         });
@@ -3038,7 +3083,6 @@ function renderInsightCard(item) {
                 ${refineActionHtml}
                 <button class="insight-action-btn positive" data-move-bucket="work_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">업무 신호</button>
                 <button class="insight-action-btn learning" data-move-bucket="learning_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">학습 신호</button>
-                <button class="insight-action-btn" data-move-bucket="review_queue" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">보류</button>
                 <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
             </div>
         </article>

@@ -1161,18 +1161,27 @@ async def api_refine_editor_review(payload: EditorReviewRefinePayload):
 async def api_save_editor_judgment(payload: EditorJudgmentPayload):
     """Stores one editor judgment label for a collected item."""
     try:
+        updated_review = {}
+        if payload.label in ("work_signal", "learning_signal", "noise"):
+            updated_review = database.update_active_editor_review_bucket_by_item(
+                profile_id=payload.profile_id,
+                item_type=payload.item_type,
+                item_id=payload.item_id,
+                target_bucket=payload.label,
+                note=payload.note or "보관함에서 편집장 판단 수정"
+            )
         judgment = database.save_editor_judgment(
             profile_id=payload.profile_id,
             item_type=payload.item_type,
             item_id=payload.item_id,
             label=payload.label,
             note=payload.note,
-            ai_review_id=payload.ai_review_id
+            ai_review_id=payload.ai_review_id or updated_review.get("id")
         )
         database.sync_starred_with_editor_label(payload.item_type, payload.item_id, payload.label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"success": True, "judgment": judgment}
+    return {"success": True, "judgment": judgment, "review": updated_review}
 
 @app.post("/api/summary/{item_type}/{item_id}")
 async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
