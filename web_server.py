@@ -331,7 +331,8 @@ Current summary/body:
 
 Allowed primary_bucket values:
 - review_queue: might be reusable, but needs human review
-- insight: clearly reusable as future strategic material
+- work_signal: directly useful for the user's assigned product/work, proposals, customer response, competitor comparison, or strategy documents
+- learning_signal: not directly tied to the user's current responsibility, but useful for technology literacy, strategic sense, or long-term knowledge growth
 - noise: likely not useful for later strategy/planning, even if it matched a keyword
 
 Allowed suggested_tags. Pick up to 4 from this fixed list only:
@@ -347,7 +348,7 @@ Rules:
 
 JSON schema:
 {{
-  "primary_bucket": "review_queue|insight|noise",
+  "primary_bucket": "review_queue|work_signal|learning_signal|noise",
   "score": 0,
   "confidence": 0,
   "reason": "한국어 1-2문장. 이 항목이 나중에 왜 쓸 만한지 또는 왜 노이즈인지 구체적으로 설명",
@@ -365,7 +366,9 @@ JSON schema:
 
     result = extract_json_object(text)
     bucket = str(result.get("primary_bucket", "review_queue")).strip()
-    if bucket not in ("review_queue", "insight", "noise"):
+    if bucket == "insight":
+        bucket = "work_signal"
+    if bucket not in ("review_queue", "work_signal", "learning_signal", "noise"):
         bucket = "review_queue"
 
     def clamp_score(value: Any, default: int) -> int:
@@ -1102,7 +1105,8 @@ async def api_move_editor_review(payload: EditorReviewMovePayload):
         )
         label = {
             "review_queue": "later",
-            "insight": "important",
+            "work_signal": "work_signal",
+            "learning_signal": "learning_signal",
             "noise": "noise"
         }.get(payload.target_bucket, "important")
         judgment = database.save_editor_judgment(

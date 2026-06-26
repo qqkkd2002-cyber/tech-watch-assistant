@@ -2933,7 +2933,7 @@ async function handleGenerateInsightCandidates() {
     DOM.generateInsightCandidatesBtn.setAttribute("disabled", "true");
     DOM.generateInsightCandidatesBtn.textContent = "정리 중";
     if (DOM.insightCandidateStatus) {
-        DOM.insightCandidateStatus.textContent = "최근 수집 항목을 인사이트 후보로 분류하고 있습니다.";
+        DOM.insightCandidateStatus.textContent = "최근 수집 항목을 신호 후보로 분류하고 있습니다.";
     }
 
     try {
@@ -2970,13 +2970,13 @@ async function loadInsightCandidates() {
 
     try {
         const res = await fetch(`/api/editor/insights?profile_id=${currentProfileId}&limit_per_bucket=4&include_noise=true`);
-        if (!res.ok) throw new Error("인사이트 후보를 불러오지 못했습니다.");
+        if (!res.ok) throw new Error("신호 후보를 불러오지 못했습니다.");
         const data = await res.json();
         latestInsightCandidateData = data;
         renderInsightCandidates(data);
     } catch (e) {
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = `인사이트 후보 로딩 실패: ${e.message}`;
+            DOM.insightCandidateStatus.textContent = `신호 후보 로딩 실패: ${e.message}`;
         }
     }
 }
@@ -3005,7 +3005,7 @@ function renderInsightCandidates(data) {
                 <span class="insight-bucket-count">${pendingTotal}개</span>
             </div>
             <div class="insight-card-list">
-                ${(reviewQueue.items || []).length ? reviewQueue.items.map(renderInsightCard).join("") : `<div class="insight-empty">처리할 후보가 없습니다. 확정한 인사이트는 대시보드와 원장에 계속 남습니다.</div>`}
+                ${(reviewQueue.items || []).length ? reviewQueue.items.map(renderInsightCard).join("") : `<div class="insight-empty">처리할 후보가 없습니다. 확정한 업무 신호와 학습 신호는 대시보드와 원장에 계속 남습니다.</div>`}
             </div>
         </div>
     `;
@@ -3066,7 +3066,8 @@ function renderInsightCard(item) {
             <div class="insight-card-actions">
                 ${summaryActionHtml}
                 ${refineActionHtml}
-                <button class="insight-action-btn positive" data-move-bucket="insight" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">인사이트</button>
+                <button class="insight-action-btn positive" data-move-bucket="work_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">업무 신호</button>
+                <button class="insight-action-btn learning" data-move-bucket="learning_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">학습 신호</button>
                 <button class="insight-action-btn" data-move-bucket="review_queue" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">보류</button>
                 <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
             </div>

@@ -219,6 +219,16 @@ def init_db():
         END
         WHERE primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence', 'likely_noise')
     """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET primary_bucket = 'work_signal'
+        WHERE primary_bucket = 'insight'
+    """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET reason = REPLACE(REPLACE(reason, '-> insight', '-> work_signal'), '인사이트', '업무 신호')
+        WHERE reason LIKE '%insight%' OR reason LIKE '%인사이트%'
+    """)
     
     # Alter scanned_docs table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_docs)")
@@ -1285,6 +1295,8 @@ def toggle_trend_star(trend_id: int, is_starred: int):
 
 EDITOR_LABELS = {
     "important",
+    "work_signal",
+    "learning_signal",
     "report_candidate",
     "watch_competitor",
     "product_idea",
@@ -1295,13 +1307,15 @@ EDITOR_LABELS = {
 
 EDITOR_BUCKETS = {
     "review_queue",
-    "insight",
+    "work_signal",
+    "learning_signal",
     "noise",
 }
 
 BUCKET_LABELS = {
     "review_queue": "검토 대기",
-    "insight": "인사이트",
+    "work_signal": "업무 신호",
+    "learning_signal": "학습 신호",
     "noise": "노이즈",
 }
 
@@ -1565,7 +1579,7 @@ def has_user_editor_judgment(profile_id: int, item_type: str, item_id: int) -> b
             WHERE profile_id = ?
               AND item_type = ?
               AND item_id = ?
-              AND label IN ('important', 'noise', 'later')
+              AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
             LIMIT 1
             """,
             (profile_id, item_type, item_id)
@@ -1814,8 +1828,9 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
             ORDER BY
                 CASE primary_bucket
                     WHEN 'review_queue' THEN 1
-                    WHEN 'insight' THEN 2
-                    WHEN 'noise' THEN 3
+                    WHEN 'work_signal' THEN 2
+                    WHEN 'learning_signal' THEN 3
+                    WHEN 'noise' THEN 4
                     ELSE 9
                 END,
                 score DESC,
@@ -1825,7 +1840,7 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
         )
         rows = [dict(r) for r in cursor.fetchall()]
         buckets = []
-        for bucket in ["review_queue", "insight", "noise"]:
+        for bucket in ["review_queue", "work_signal", "learning_signal", "noise"]:
             items = [r for r in rows if r.get("primary_bucket") == bucket]
             buckets.append({
                 "bucket": bucket,
@@ -1864,7 +1879,7 @@ def get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = Fal
                     GROUP_CONCAT(label) AS labels,
                     MAX(updated_at) AS last_judged_at,
                     MAX(CASE WHEN label = 'noise' THEN 1 ELSE 0 END) AS has_noise,
-                    MAX(CASE WHEN label IN ('important', 'report_candidate', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 1 ELSE 0 END) AS has_positive
+                    MAX(CASE WHEN label IN ('important', 'work_signal', 'learning_signal', 'report_candidate', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 1 ELSE 0 END) AS has_positive
                 FROM editor_judgments
                 WHERE profile_id = ?
                 GROUP BY item_type, item_id

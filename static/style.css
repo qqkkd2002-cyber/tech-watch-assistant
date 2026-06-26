@@ -3527,6 +3527,12 @@ body {
     background: rgba(16, 185, 129, 0.08);
 }
 
+.insight-action-btn.learning {
+    color: #d8b4fe;
+    border-color: rgba(168, 85, 247, 0.28);
+    background: rgba(168, 85, 247, 0.08);
+}
+
 .insight-action-btn.noise {
     color: #fca5a5;
     border-color: rgba(239, 68, 68, 0.24);
