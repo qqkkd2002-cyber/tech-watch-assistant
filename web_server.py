@@ -1117,6 +1117,7 @@ async def api_move_editor_review(payload: EditorReviewMovePayload):
             label=label,
             note=payload.note or "드래그로 후보 카테고리 수정"
         )
+        database.sync_starred_with_editor_label(moved["item_type"], moved["item_id"], label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"success": True, "review": moved, "judgment": judgment}
@@ -1168,6 +1169,7 @@ async def api_save_editor_judgment(payload: EditorJudgmentPayload):
             note=payload.note,
             ai_review_id=payload.ai_review_id
         )
+        database.sync_starred_with_editor_label(payload.item_type, payload.item_id, payload.label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"success": True, "judgment": judgment}

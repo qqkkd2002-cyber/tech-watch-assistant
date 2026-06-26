@@ -257,6 +257,53 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_error TEXT DEFAULT ''")
     if 'retry_count' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN retry_count INTEGER DEFAULT 0")
+
+    # Keep the archive aligned with editor decisions:
+    # confirmed work/learning signals are important, noise is not.
+    cursor.execute("""
+        UPDATE scanned_docs
+        SET is_starred = 1
+        WHERE id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'doc'
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+        )
+    """)
+    cursor.execute("""
+        UPDATE scanned_trends
+        SET is_starred = 1
+        WHERE id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'trend'
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+        )
+    """)
+    cursor.execute("""
+        UPDATE scanned_docs
+        SET is_starred = 0
+        WHERE id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'doc'
+              AND is_active = 1
+              AND primary_bucket = 'noise'
+        )
+    """)
+    cursor.execute("""
+        UPDATE scanned_trends
+        SET is_starred = 0
+        WHERE id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'trend'
+              AND is_active = 1
+              AND primary_bucket = 'noise'
+        )
+    """)
         
     # Alter profile_keywords table to add folder column if missing
     cursor.execute("PRAGMA table_info(profile_keywords)")
@@ -1290,6 +1337,26 @@ def toggle_trend_star(trend_id: int, is_starred: int):
     cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, trend_id))
     conn.commit()
     conn.close()
+
+def set_item_starred(item_type: str, item_id: int, is_starred: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        if item_type == "doc":
+            cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (is_starred, item_id))
+        elif item_type == "trend":
+            cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, item_id))
+        else:
+            raise ValueError("item_type must be 'doc' or 'trend'")
+        conn.commit()
+    finally:
+        conn.close()
+
+def sync_starred_with_editor_label(item_type: str, item_id: int, label: str):
+    if label in ("work_signal", "learning_signal", "important"):
+        set_item_starred(item_type, item_id, 1)
+    elif label == "noise":
+        set_item_starred(item_type, item_id, 0)
 
 # --- TWT v2 EDITOR MODE FUNCTIONS ---
 
