@@ -1648,7 +1648,11 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
                 tags.append("ai_security")
             score = max(score, 70)
             confidence = max(confidence, 64)
-        if any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
+        if item.get("item_type") == "doc" and item.get("category") == "reference":
+            tags.append("technical_reference")
+            score = max(score, 66)
+            confidence = max(confidence, 63)
+        elif any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
             tags.append("competitor")
             score = max(score, 66)
             confidence = max(confidence, 63)
