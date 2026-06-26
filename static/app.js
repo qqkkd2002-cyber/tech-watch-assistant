@@ -3232,6 +3232,7 @@ async function handleRefineReviewQueue() {
     const reviewQueue = (latestInsightCandidateData?.buckets || []).find(bucket => bucket.bucket === "review_queue");
     const targets = (reviewQueue?.items || [])
         .filter(item => item.classification_source !== "llm")
+        .sort((a, b) => getRefinePriorityScore(b) - getRefinePriorityScore(a))
         .slice(0, 3);
 
     if (!targets.length) {
@@ -3269,6 +3270,20 @@ async function handleRefineReviewQueue() {
         btn.disabled = false;
         btn.textContent = originalText;
     }
+}
+
+function getRefinePriorityScore(item) {
+    const score = Number(item.score || 0);
+    const confidence = Number(item.confidence || 0);
+    const isSummaryComplete = item.analysis_status !== "pending" ? 18 : 0;
+    const isManualSaved = Number(item.manual_saved ?? item.is_starred ?? 0) === 1 ? 16 : 0;
+    const lowConfidenceBoost = Math.max(0, 80 - confidence) * 0.35;
+    const recentTime = getFeedSortTime({
+        published_at: item.published_at,
+        created_at: item.item_created_at || item.created_at
+    });
+    const recencyBoost = recentTime ? Math.min(14, Math.max(0, (recentTime - (Date.now() - 1000 * 60 * 60 * 24 * 14)) / (1000 * 60 * 60 * 24))) : 0;
+    return score + isSummaryComplete + isManualSaved + lowConfidenceBoost + recencyBoost;
 }
 
 function parseInsightTags(rawTags) {

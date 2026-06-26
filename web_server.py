@@ -303,7 +303,37 @@ Respond ONLY as valid JSON with this schema:
         "source": str(result.get("source", "")).strip() or "News"
     }
 
-async def refine_editor_review_item(api_key: str, item: Dict[str, Any]) -> Dict[str, Any]:
+def build_editor_profile_context(profile_id: int) -> str:
+    profile = database.get_profile_by_id(profile_id) or {}
+    keywords = database.get_profile_keywords(profile_id)
+    feeds = database.get_profile_feeds(profile_id)
+
+    keyword_lines = []
+    for keyword in keywords[:40]:
+        folder = keyword.get("folder") or "미분류"
+        keyword_lines.append(f"- [{folder}] {keyword.get('keyword', '')}")
+
+    competitor_lines = []
+    reference_lines = []
+    for feed in feeds[:30]:
+        name = feed.get("name") or "이름 없음"
+        feed_type = feed.get("feed_type") or "competitor"
+        if feed_type == "reference":
+            reference_lines.append(f"- {name}")
+        else:
+            competitor_lines.append(f"- {name}")
+
+    return "\n".join([
+        f"Profile name: {profile.get('name', '')}",
+        "Monitoring keywords and folders:",
+        "\n".join(keyword_lines) if keyword_lines else "- No keywords configured",
+        "Competitor/product feeds:",
+        "\n".join(competitor_lines) if competitor_lines else "- No competitor feeds configured",
+        "Reference/technology feeds:",
+        "\n".join(reference_lines) if reference_lines else "- No reference feeds configured",
+    ])
+
+async def refine_editor_review_item(api_key: str, item: Dict[str, Any], profile_context: str = "") -> Dict[str, Any]:
     fixed_tag_lines = "\n".join([
         f"- {key}: {label}"
         for key, label in database.SUGGESTED_TAG_LABELS.items()
@@ -320,6 +350,9 @@ Product identity:
 - The core question is whether this item should be kept as reusable strategic material for future reports, upper-level planning, competitor analysis, proposal/RFP evidence, or technology strategy.
 - Noise should be demoted, not deleted, because the original item remains searchable in the collection ledger.
 
+Current user's monitoring context:
+{profile_context or "- No profile context available"}
+
 Item:
 Type: {item.get('item_type', '')}
 Title: {item.get('title', '')}
@@ -330,19 +363,22 @@ Current summary/body:
 {summary_text}
 
 Allowed primary_bucket values:
-- review_queue: might be reusable, but needs human review
-- work_signal: directly useful for the user's assigned product/work, proposals, customer response, competitor comparison, or strategy documents
+- work_signal: directly useful for the user's assigned product/work, monitored competitors/products, proposals, customer response, competitor comparison, or strategy documents
 - learning_signal: not directly tied to the user's current responsibility, but useful for technology literacy, strategic sense, or long-term knowledge growth
 - noise: likely not useful for later strategy/planning, even if it matched a keyword
+- review_queue: use only when there is not enough evidence to choose work_signal, learning_signal, or noise
 
 Allowed suggested_tags. Pick up to 4 from this fixed list only:
 {fixed_tag_lines}
 
 Rules:
 - Respond ONLY as valid JSON. Do not include markdown fences.
-- Write a reason that is specific to this item, not a generic template.
-- Do not over-promote generic finance news, personnel articles, investment articles, or unrelated keyword matches.
-- Use "noise" when the item lacks reusable strategy value.
+- Classify by reusable value, not simple keyword match.
+- Use the profile context to judge whether the item is close to the user's actual work. If it is broadly educational but not close to the profile context, prefer learning_signal over work_signal.
+- Do not over-promote generic finance news, personnel articles, award articles, investment/funding articles, events, or unrelated keyword matches.
+- Use noise when the item lacks reusable strategy value, even if it mentions a monitored keyword.
+- Use work_signal only when the item would plausibly help a later strategy memo, proposal, product positioning, competitor comparison, or customer discussion.
+- Write a reason that cites concrete facts from this item, not a generic template.
 - score means reusable strategic value, 0-100.
 - confidence means confidence in the classification, 0-100.
 
@@ -395,7 +431,7 @@ JSON schema:
         "related_theme": str(result.get("related_theme", "")).strip() or item.get("category") or item.get("source_name") or "전략 신호",
         "classification_source": "llm",
         "model_name": "gemini",
-        "prompt_version": "reuse-value-v1",
+        "prompt_version": "reuse-value-profile-v2",
     }
 
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
@@ -1144,7 +1180,8 @@ async def api_refine_editor_review(payload: EditorReviewRefinePayload):
         raise HTTPException(status_code=400, detail="이미 사용자가 판단한 카드라 AI가 다시 덮어쓰지 않습니다.")
 
     try:
-        refined = await refine_editor_review_item(api_key, context)
+        profile_context = build_editor_profile_context(payload.profile_id)
+        refined = await refine_editor_review_item(api_key, context, profile_context)
         updated = database.update_ai_editor_review_classification(
             profile_id=payload.profile_id,
             ai_review_id=payload.ai_review_id,

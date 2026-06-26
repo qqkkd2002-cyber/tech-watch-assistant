@@ -1212,7 +1212,7 @@ def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool =
     conditions = ["t.profile_id = ?"]
     
     if starred_only:
-        conditions.append("t.is_starred = 1")
+        conditions.append("(COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))")
     folders = [f.strip() for f in folder.split(",") if f.strip()]
     if folders:
         placeholders = ", ".join(["?"] * len(folders))
@@ -1232,6 +1232,11 @@ def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool =
     query = f"""
         SELECT t.*, k.folder FROM scanned_trends t
         LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = t.profile_id
+         AND ar.item_type = 'trend'
+         AND ar.item_id = t.id
+         AND ar.is_active = 1
         WHERE {' AND '.join(conditions)}
         ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ?
     """
@@ -1667,10 +1672,10 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
         tag_names = [SUGGESTED_TAG_LABELS.get(tag, tag) for tag in tags]
         reason = f"AI가 바로 확정하지 않고 검토 대기 후보로 올렸습니다. 참고 태그: {', '.join(tag_names)}."
 
-    if int(item.get("is_starred") or 0) == 1:
+    if int(item.get("manual_saved", item.get("is_starred")) or 0) == 1:
         score += 12
         confidence += 6
-        reason += " 이미 중요 보관함에 포함된 항목이라 우선순위를 높였습니다."
+        reason += " 사용자가 수동 저장한 항목이라 우선순위를 높였습니다."
     if item.get("analysis_status") == "pending":
         reason += " 현재 AI 요약 대기 상태이므로 원문 확인 또는 요약 생성이 필요합니다."
 
@@ -1817,7 +1822,13 @@ def get_ai_editor_review_context(profile_id: int, ai_review_id: int) -> Dict[str
                 d.published_at,
                 d.created_at AS item_created_at,
                 d.analysis_status,
-                d.is_starred
+                d.is_starred,
+                COALESCE(d.manual_saved, 0) AS manual_saved,
+                CASE
+                    WHEN COALESCE(d.manual_saved, 0) = 1
+                         OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                    THEN 1 ELSE 0
+                END AS archive_saved
             FROM ai_editor_reviews ar
             JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
             WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
@@ -1834,7 +1845,13 @@ def get_ai_editor_review_context(profile_id: int, ai_review_id: int) -> Dict[str
                 t.published_at,
                 t.created_at AS item_created_at,
                 t.analysis_status,
-                t.is_starred
+                t.is_starred,
+                COALESCE(t.manual_saved, 0) AS manual_saved,
+                CASE
+                    WHEN COALESCE(t.manual_saved, 0) = 1
+                         OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                    THEN 1 ELSE 0
+                END AS archive_saved
             FROM ai_editor_reviews ar
             JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
             WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
@@ -1929,7 +1946,13 @@ def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool
                     d.published_at,
                     d.created_at,
                     d.analysis_status,
-                    d.is_starred
+                    d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    CASE
+                        WHEN COALESCE(d.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
                 FROM scanned_docs d
                 LEFT JOIN ai_editor_reviews ar
                     ON ar.profile_id = d.profile_id
@@ -1952,7 +1975,13 @@ def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool
                     t.published_at,
                     t.created_at,
                     t.analysis_status,
-                    t.is_starred
+                    t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    CASE
+                        WHEN COALESCE(t.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
                 FROM scanned_trends t
                 LEFT JOIN ai_editor_reviews ar
                     ON ar.profile_id = t.profile_id
@@ -2006,7 +2035,13 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     d.published_at,
                     d.created_at AS item_created_at,
                     d.analysis_status,
-                    d.is_starred
+                    d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    CASE
+                        WHEN COALESCE(d.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
                 FROM active_reviews ar
                 JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
 
@@ -2022,7 +2057,13 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     t.published_at,
                     t.created_at AS item_created_at,
                     t.analysis_status,
-                    t.is_starred
+                    t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    CASE
+                        WHEN COALESCE(t.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
                 FROM active_reviews ar
                 JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
             ),
@@ -2111,11 +2152,12 @@ def get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = Fal
                     d.created_at,
                     d.analysis_status,
                     d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
                     COALESCE(js.labels, '') AS labels,
                     COALESCE(js.has_noise, 0) AS has_noise,
                     COALESCE(js.has_positive, 0) AS has_positive,
                     (
-                        CASE WHEN d.is_starred = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN COALESCE(d.manual_saved, 0) = 1 THEN 30 ELSE 0 END +
                         CASE WHEN d.analysis_status = 'pending' THEN 12 ELSE 6 END +
                         CASE WHEN d.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
                         CASE WHEN d.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
@@ -2140,11 +2182,12 @@ def get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = Fal
                     t.created_at,
                     t.analysis_status,
                     t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
                     COALESCE(js.labels, '') AS labels,
                     COALESCE(js.has_noise, 0) AS has_noise,
                     COALESCE(js.has_positive, 0) AS has_positive,
                     (
-                        CASE WHEN t.is_starred = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN COALESCE(t.manual_saved, 0) = 1 THEN 30 ELSE 0 END +
                         CASE WHEN t.analysis_status = 'pending' THEN 12 ELSE 6 END +
                         CASE WHEN t.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
                         CASE WHEN t.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
