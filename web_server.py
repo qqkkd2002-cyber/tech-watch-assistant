@@ -554,6 +554,12 @@ async def stop_auto_scan_scheduler():
         auto_retry_task.cancel()
 
 # --- Background Task ---
+def should_generate_editor_reviews_after_agent(args: List[str], profile_id: Optional[int]) -> bool:
+    if not profile_id:
+        return False
+    skip_flags = {"--retry-only", "--report-only", "--weekly-report", "--monthly-report"}
+    return not any(flag in args for flag in skip_flags)
+
 async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None):
     global active_process, active_logs, scan_status, active_profile_id
     
@@ -611,7 +617,19 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
                 active_logs.pop(0)
                 
         await active_process.wait()
-        active_logs.append("\n[System] Scan process completed successfully.\n")
+        if active_process.returncode == 0:
+            active_logs.append("\n[System] Scan process completed successfully.\n")
+            if should_generate_editor_reviews_after_agent(args, profile_id):
+                try:
+                    reviews = database.generate_rule_based_ai_editor_reviews(profile_id=profile_id, limit=80, force=False)
+                    active_logs.append(
+                        f"[System] Editor candidate preparation completed. "
+                        f"{len(reviews)} new items were added to 후보 정리.\n"
+                    )
+                except Exception as review_error:
+                    active_logs.append(f"[System] Editor candidate preparation failed: {review_error}\n")
+        else:
+            active_logs.append(f"\n[System] Scan process exited with code {active_process.returncode}.\n")
     except Exception as e:
         active_logs.append(f"\n[System] ERROR running agent process: {e}\n")
     finally:
