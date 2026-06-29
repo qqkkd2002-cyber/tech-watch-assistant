@@ -16,12 +16,32 @@ DEFAULT_MODEL = "gemma4:latest"
 MIN_ARTICLE_CHARS = 500
 MAX_ARTICLE_CHARS = 24000
 GOOGLE_NEWS_HOST = "news.google.com"
+OBVIOUS_NOISE_TITLE_TERMS = (
+    "backstage",
+    "music core",
+    "스타★샷",
+    "음악방송",
+    "연예",
+    "콘서트",
+    "공연",
+    "골프",
+    "여행",
+)
 
 
 class TrendPipelineError(RuntimeError):
     def __init__(self, stage: str, message: str):
         super().__init__(message)
         self.stage = stage
+
+
+def detect_obvious_search_noise(article: Dict[str, Any]) -> str:
+    """Return a conservative title-only noise match before costly extraction/LLM work."""
+    title = _normalize_text(str(article.get("title", ""))).lower()
+    for term in OBVIOUS_NOISE_TITLE_TERMS:
+        if term.lower() in title:
+            return term
+    return ""
 
 
 def _ssl_context() -> ssl.SSLContext:

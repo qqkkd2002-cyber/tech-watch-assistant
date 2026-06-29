@@ -716,6 +716,7 @@ def find_scanned_trend_by_url(
     link: str = "",
     original_url: str = "",
     source_url: str = "",
+    exclude_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     candidates = [value.strip() for value in (link, original_url, source_url) if value and value.strip()]
     if not candidates:
@@ -724,14 +725,19 @@ def find_scanned_trend_by_url(
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        exclude_clause = " AND id != ?" if exclude_id is not None else ""
+        params = [profile_id] + candidates + candidates + candidates
+        if exclude_id is not None:
+            params.append(int(exclude_id))
         cursor.execute(
             f"""
             SELECT * FROM scanned_trends
             WHERE profile_id = ?
               AND (link IN ({placeholders}) OR original_url IN ({placeholders}) OR source_url IN ({placeholders}))
+              {exclude_clause}
             ORDER BY id ASC LIMIT 1
             """,
-            [profile_id] + candidates + candidates + candidates,
+            params,
         )
         row = cursor.fetchone()
         return dict(row) if row else None
@@ -749,6 +755,82 @@ def merge_scanned_trend_keyword(trend_id: int, keyword: str) -> None:
         merged = _merge_keyword_text(row["matched_keywords"] or row["keyword"] or "", keyword)
         cursor.execute("UPDATE scanned_trends SET matched_keywords = ? WHERE id = ?", (merged, trend_id))
         conn.commit()
+    finally:
+        conn.close()
+
+def get_queued_trends(profile_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    """Return only new-article items explicitly deferred by the processing cap."""
+    limit = max(1, min(int(limit or 10), 500))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status = 'queued'
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (profile_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def update_scanned_trend_content(
+    trend_id: int,
+    *,
+    keyword: str,
+    title: str,
+    link: str,
+    summary: str,
+    source: str,
+    published_at: str = "",
+    analysis_status: str = "complete",
+    analysis_error: str = "",
+    original_url: str = "",
+    source_url: str = "",
+    content_status: str,
+    content_error: str = "",
+    content_chars: int = 0,
+    content_extractor: str = "",
+    content_resolver: str = "",
+    summary_model: str = "",
+    summary_evidence: Optional[List[str]] = None,
+) -> bool:
+    """Complete one queued trend in place without touching user/editor state."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT keyword, matched_keywords FROM scanned_trends WHERE id = ?", (trend_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        matched_keywords = _merge_keyword_text(row["matched_keywords"] or row["keyword"] or "", keyword)
+        cursor.execute(
+            """
+            UPDATE scanned_trends
+            SET keyword = ?, title = ?, link = ?, summary = ?, source = ?, published_at = ?,
+                analysis_status = ?, analysis_error = ?, original_url = ?, source_url = ?,
+                content_status = ?, content_error = ?, content_chars = ?, content_extractor = ?,
+                content_resolver = ?, summary_model = ?, summary_evidence = ?,
+                matched_keywords = ?
+            WHERE id = ?
+            """,
+            (
+                keyword, title, link, summary, source, published_at,
+                analysis_status, analysis_error, original_url, source_url,
+                content_status, content_error, int(content_chars or 0), content_extractor,
+                content_resolver, summary_model,
+                json.dumps(summary_evidence or [], ensure_ascii=False), matched_keywords, trend_id,
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except sqlite3.IntegrityError:
+        return False
     finally:
         conn.close()
 
@@ -847,9 +929,12 @@ def get_trend_content_pipeline_stats(profile_id: int, hours: int = 24) -> Dict[s
             (profile_id, f"-{hours} hours"),
         )
         resolver_counts = {row["resolver"]: int(row["count"] or 0) for row in cursor.fetchall()}
-        attempts = sum(counts.values())
+        queued = counts.get("queued", 0)
+        noise_filtered = counts.get("noise_filtered", 0)
+        duplicates = counts.get("duplicate", 0)
         successes = counts.get("summarized", 0)
-        failures = attempts - successes
+        failures = sum(count for status, count in counts.items() if status.endswith("_failed"))
+        attempts = successes + failures
         failure_rate = round(failures / attempts, 3) if attempts else 0.0
         return {
             "hours": hours,
@@ -858,6 +943,9 @@ def get_trend_content_pipeline_stats(profile_id: int, hours: int = 24) -> Dict[s
             "failures": failures,
             "failure_rate": failure_rate,
             "warning": attempts >= 5 and failure_rate >= 0.3,
+            "queued": queued,
+            "noise_filtered": noise_filtered,
+            "duplicates": duplicates,
             "by_status": counts,
             "by_resolver": resolver_counts,
         }
@@ -1790,7 +1878,11 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     tags = []
     reason = "최근 수집된 항목 중 편집장 검토가 필요한 후보로 올렸습니다."
 
-    noise_terms = ["backstage", "concert", "golf", "travel", "sortir", "연예", "공연", "카르네발", "재생에너지 투자"]
+    noise_terms = [
+        "backstage", "music core", "concert", "golf", "travel", "sortir",
+        "연예", "공연", "콘서트", "음악방송", "스타★샷", "골프", "여행",
+        "카르네발", "재생에너지 투자",
+    ]
     rfp_terms = ["금융", "은행", "증권", "보험", "망분리", "보안", "규제", "거버넌스", "ai보안", "차세대", "코어뱅킹"]
     product_terms = ["developer experience", "개발자 생산성", "platform engineering", "플랫폼 엔지니어링", "idp", "devops", "devsecops", "gitops", "llmops", "rag"]
     ai_terms = ["ai", "llm", "생성형", "에이전트", "자동화", "agent", "copilot"]
