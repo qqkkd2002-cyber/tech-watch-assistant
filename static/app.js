@@ -3004,8 +3004,15 @@ function renderInsightCandidates(data) {
         total: 0,
         items: [],
     };
+    const noiseBucket = (data?.buckets || []).find(bucket => bucket.bucket === "noise") || {
+        bucket: "noise",
+        label: "노이즈",
+        total: 0,
+        items: [],
+    };
     const pendingTotal = reviewQueue.total || 0;
     const visibleCount = (reviewQueue.items || []).length;
+    const noiseTotal = noiseBucket.total || 0;
 
     if (DOM.insightCandidateStatus) {
         DOM.insightCandidateStatus.textContent = pendingTotal
@@ -3023,6 +3030,16 @@ function renderInsightCandidates(data) {
                 ${(reviewQueue.items || []).length ? reviewQueue.items.map(renderInsightCard).join("") : `<div class="insight-empty">처리할 후보가 없습니다. 확정한 업무 신호와 학습 신호는 대시보드와 원장에 계속 남습니다.</div>`}
             </div>
         </div>
+        <details class="insight-noise-monitor">
+            <summary>
+                <span>LLM 노이즈 처리 목록</span>
+                <strong>${noiseTotal}개</strong>
+            </summary>
+            <p>자동으로 낮춘 항목입니다. 삭제된 것이 아니며, 잘못 내려간 카드는 여기서 업무 신호나 학습 신호로 다시 끌어올릴 수 있습니다.</p>
+            <div class="insight-card-list compact">
+                ${(noiseBucket.items || []).length ? noiseBucket.items.map(renderInsightCard).join("") : `<div class="insight-empty">현재 확인할 노이즈 항목이 없습니다.</div>`}
+            </div>
+        </details>
     `;
 
     DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
@@ -3229,41 +3246,44 @@ async function handleInsightRefine(btn) {
 
 async function handleRefineReviewQueue() {
     if (!currentProfileId || !DOM.refineReviewQueueBtn) return;
-    const reviewQueue = (latestInsightCandidateData?.buckets || []).find(bucket => bucket.bucket === "review_queue");
-    const targets = (reviewQueue?.items || [])
-        .filter(item => item.classification_source !== "llm")
-        .sort((a, b) => getRefinePriorityScore(b) - getRefinePriorityScore(a))
-        .slice(0, 3);
-
-    if (!targets.length) {
-        if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = "검토 대기 안에 정밀 분류가 필요한 후보가 없습니다.";
-        }
-        return;
-    }
-
     const btn = DOM.refineReviewQueueBtn;
     const originalText = btn.textContent;
     btn.disabled = true;
+    btn.textContent = "파일럿 분류 중";
 
-    let successCount = 0;
     try {
-        for (let i = 0; i < targets.length; i += 1) {
-            const item = targets[i];
-            btn.textContent = `분류 중 ${i + 1}/${targets.length}`;
-            if (DOM.insightCandidateStatus) {
-                DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${i + 1}/${targets.length}개째를 정밀 분류하고 있습니다.`;
-            }
-            await refineInsightReview(item.id);
-            successCount += 1;
-        }
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${successCount}개를 정밀 분류했습니다.`;
+            DOM.insightCandidateStatus.textContent = "트렌드 검토 대기 후보를 제한된 범위로 정밀 분류하고 있습니다.";
+        }
+        const res = await fetch("/api/editor/reviews/refine-pilot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                item_type: "trend",
+                limit: 15
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+            throw new Error(data.detail || data.error || "파일럿 정밀 분류에 실패했습니다.");
+        }
+        const counts = data.bucket_counts || {};
+        const usage = data.usage_estimate || {};
+        const countText = [
+            `업무 ${counts.work_signal || 0}`,
+            `학습 ${counts.learning_signal || 0}`,
+            `노이즈 ${counts.noise || 0}`,
+            `검토 ${counts.review_queue || 0}`
+        ].join(" · ");
+        const tokenText = usage.total_tokens ? ` · 추정 ${Number(usage.total_tokens).toLocaleString()} tokens` : "";
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `파일럿 ${data.completed || 0}/${data.target_count || 0}개 완료: ${countText}${tokenText}`;
         }
         await loadInsightCandidates();
     } catch (e) {
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = `정밀 분류 중단: ${successCount}개 완료, 오류: ${e.message}`;
+            DOM.insightCandidateStatus.textContent = `파일럿 정밀 분류 중단: ${e.message}`;
         }
         await loadInsightCandidates();
     } finally {
@@ -3297,20 +3317,26 @@ function parseInsightTags(rawTags) {
 
 function formatInsightTag(tag) {
     const labels = {
-        report: "시장 신호",
         competitor: "경쟁사",
-        market_signal: "시장 신호",
-        ai_security: "AI/보안",
+        cloud_cmp: "클라우드/CMP",
         finance: "금융권",
-        core_banking: "코어뱅킹",
-        devops: "DevOps",
-        platform_engineering: "플랫폼 엔지니어링",
+        security_regulation: "보안/규제",
+        ai_automation: "AI/자동화",
+        public_policy: "공공/정책",
+        technical_reference: "기술 레퍼런스",
+        market_trend: "시장동향",
+        proposal_evidence: "제안근거",
         product_hint: "제품 힌트",
+        report: "시장동향",
+        market_signal: "시장동향",
+        ai_security: "보안/규제",
+        core_banking: "금융권",
+        devops: "클라우드/CMP",
+        platform_engineering: "클라우드/CMP",
         product_idea: "제품 힌트",
-        rfp_evidence: "RFP/제안 근거",
-        regulation: "규제/정책",
-        regulation_policy: "규제/정책",
-        technical_reference: "기술 레퍼런스"
+        rfp_evidence: "제안근거",
+        regulation: "보안/규제",
+        regulation_policy: "보안/규제"
     };
     return labels[tag] || tag;
 }

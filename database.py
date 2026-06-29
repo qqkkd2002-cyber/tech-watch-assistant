@@ -1482,24 +1482,30 @@ BUCKET_LABELS = {
 
 SUGGESTED_TAG_LABELS = {
     "competitor": "경쟁사",
-    "market_signal": "시장 신호",
-    "ai_security": "AI/보안",
+    "cloud_cmp": "클라우드/CMP",
     "finance": "금융권",
-    "core_banking": "코어뱅킹",
-    "devops": "DevOps",
-    "platform_engineering": "플랫폼 엔지니어링",
-    "rfp_evidence": "RFP 근거",
-    "product_hint": "제품 힌트",
-    "regulation_policy": "규제/정책",
+    "security_regulation": "보안/규제",
+    "ai_automation": "AI/자동화",
+    "public_policy": "공공/정책",
     "technical_reference": "기술 레퍼런스",
+    "market_trend": "시장동향",
+    "proposal_evidence": "제안근거",
+    "product_hint": "제품 힌트",
 }
 
 FIXED_EDITOR_TAGS = set(SUGGESTED_TAG_LABELS.keys())
 
 LEGACY_TAG_MAP = {
-    "report": "market_signal",
+    "report": "market_trend",
+    "market_signal": "market_trend",
+    "ai_security": "security_regulation",
+    "core_banking": "finance",
+    "devops": "cloud_cmp",
+    "platform_engineering": "cloud_cmp",
+    "rfp_evidence": "proposal_evidence",
     "product_idea": "product_hint",
-    "regulation": "regulation_policy",
+    "regulation": "security_regulation",
+    "regulation_policy": "security_regulation",
 }
 
 def normalize_editor_tags(tags: Any, limit: int = 4) -> List[str]:
@@ -1628,6 +1634,8 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     noise_terms = ["backstage", "concert", "golf", "travel", "sortir", "연예", "공연", "카르네발", "재생에너지 투자"]
     rfp_terms = ["금융", "은행", "증권", "보험", "망분리", "보안", "규제", "거버넌스", "ai보안", "차세대", "코어뱅킹"]
     product_terms = ["developer experience", "개발자 생산성", "platform engineering", "플랫폼 엔지니어링", "idp", "devops", "devsecops", "gitops", "llmops", "rag"]
+    ai_terms = ["ai", "llm", "생성형", "에이전트", "자동화", "agent", "copilot"]
+    cloud_terms = ["cloud", "클라우드", "cmp", "kubernetes", "쿠버네티스", "container", "컨테이너"]
     competitor_terms = ["github", "gitlab", "atlassian", "jira", "azure devops", "harness", "copilot"]
     report_terms = ["전략", "시장", "트렌드", "전망", "도입", "확산", "가이드라인", "보고서"]
 
@@ -1638,14 +1646,14 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
         reason = "등록 키워드와는 맞지만 기술/경쟁사 전략과 직접 관련이 낮아 보입니다."
     else:
         if any(term in haystack for term in rfp_terms):
-            tags.append("rfp_evidence")
+            tags.append("proposal_evidence")
             tags.append("finance")
             if "규제" in haystack or "가이드라인" in haystack:
-                tags.append("regulation_policy")
-            if "코어뱅킹" in haystack:
-                tags.append("core_banking")
+                tags.append("security_regulation")
+            if "공공" in haystack or "정부" in haystack or "조달" in haystack:
+                tags.append("public_policy")
             if "보안" in haystack or "ai보안" in haystack:
-                tags.append("ai_security")
+                tags.append("security_regulation")
             score = max(score, 70)
             confidence = max(confidence, 64)
         if item.get("item_type") == "doc" and item.get("category") == "reference":
@@ -1658,15 +1666,23 @@ def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
             confidence = max(confidence, 63)
         if any(term in haystack for term in product_terms):
             if "platform engineering" in haystack or "플랫폼 엔지니어링" in haystack or "idp" in haystack:
-                tags.append("platform_engineering")
+                tags.append("cloud_cmp")
             elif "devops" in haystack or "gitops" in haystack or "devsecops" in haystack:
-                tags.append("devops")
+                tags.append("cloud_cmp")
             else:
                 tags.append("product_hint")
             score = max(score, 64)
             confidence = max(confidence, 61)
+        if any(term in haystack for term in ai_terms):
+            tags.append("ai_automation")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
+        if any(term in haystack for term in cloud_terms):
+            tags.append("cloud_cmp")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
         if any(term in haystack for term in report_terms):
-            tags.append("market_signal")
+            tags.append("market_trend")
             score = max(score, 62)
             confidence = max(confidence, 60)
         if not tags:
@@ -1926,6 +1942,103 @@ def update_ai_editor_review_classification(profile_id: int, ai_review_id: int, r
         cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
         row = cursor.fetchone()
         return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def get_editor_refine_pilot_targets(profile_id: int, limit: int = 15, item_type: str = "trend") -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 15), 30))
+    if item_type not in ("doc", "trend", "all"):
+        raise ValueError("item_type must be 'doc', 'trend', or 'all'")
+
+    type_filter = "" if item_type == "all" else "AND ar.item_type = ?"
+    params: List[Any] = [profile_id]
+    if item_type != "all":
+        params.append(item_type)
+    params.append(limit)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            f"""
+            WITH judgmented AS (
+                SELECT DISTINCT profile_id, item_type, item_id
+                FROM editor_judgments
+                WHERE profile_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+            ),
+            candidates AS (
+                SELECT
+                    ar.id AS ai_review_id,
+                    ar.item_type,
+                    ar.item_id,
+                    ar.primary_bucket,
+                    ar.classification_source,
+                    ar.score,
+                    ar.confidence,
+                    ar.reason,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    COALESCE(d.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN judgmented j
+                  ON j.item_type = ar.item_type AND j.item_id = ar.item_id
+                WHERE ar.profile_id = ?
+                  AND ar.is_active = 1
+                  AND ar.primary_bucket = 'review_queue'
+                  AND ar.classification_source != 'llm'
+                  AND j.item_id IS NULL
+
+                UNION ALL
+
+                SELECT
+                    ar.id AS ai_review_id,
+                    ar.item_type,
+                    ar.item_id,
+                    ar.primary_bucket,
+                    ar.classification_source,
+                    ar.score,
+                    ar.confidence,
+                    ar.reason,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    COALESCE(t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                LEFT JOIN judgmented j
+                  ON j.item_type = ar.item_type AND j.item_id = ar.item_id
+                WHERE ar.profile_id = ?
+                  AND ar.is_active = 1
+                  AND ar.primary_bucket = 'review_queue'
+                  AND ar.classification_source != 'llm'
+                  AND j.item_id IS NULL
+            )
+            SELECT *
+            FROM candidates ar
+            WHERE 1=1 {type_filter}
+            ORDER BY
+                CASE ar.item_type WHEN 'trend' THEN 1 ELSE 2 END,
+                ar.score DESC,
+                ar.confidence ASC,
+                ar.item_created_at DESC
+            LIMIT ?
+            """,
+            [profile_id, profile_id] + params
+        )
+        return [dict(r) for r in cursor.fetchall()]
     finally:
         conn.close()
 

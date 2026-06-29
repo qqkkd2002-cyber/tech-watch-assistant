@@ -115,6 +115,11 @@ class EditorReviewRefinePayload(BaseModel):
     profile_id: int
     ai_review_id: int
 
+class EditorReviewPilotPayload(BaseModel):
+    profile_id: int
+    limit: int = 15
+    item_type: str = "trend"
+
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
     seed_keyword: str = ""
@@ -433,6 +438,10 @@ JSON schema:
         "model_name": "gemini",
         "prompt_version": "reuse-value-profile-v2",
     }
+
+def estimate_llm_tokens(*texts: str) -> int:
+    char_count = sum(len(text or "") for text in texts)
+    return max(1, int(char_count / 3.5))
 
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
     if int(profile.get("auto_scan_enabled", 1) or 0) != 1:
@@ -1211,6 +1220,109 @@ async def api_refine_editor_review(payload: EditorReviewRefinePayload):
         raise HTTPException(status_code=500, detail=f"정밀 분류 실패: {exc}")
 
     return {"success": True, "review": updated}
+
+@app.post("/api/editor/reviews/refine-pilot")
+async def api_refine_editor_reviews_pilot(payload: EditorReviewPilotPayload):
+    """Runs a limited LLM precision-classification pilot for unjudged review-queue items."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(payload.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for precision classification.")
+
+    try:
+        targets = database.get_editor_refine_pilot_targets(
+            profile_id=payload.profile_id,
+            limit=payload.limit,
+            item_type=payload.item_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    profile_context = build_editor_profile_context(payload.profile_id)
+    started_at = datetime.now()
+    results = []
+    estimated_input_tokens = 0
+    estimated_output_tokens = 0
+
+    for index, target in enumerate(targets, start=1):
+        context = database.get_ai_editor_review_context(payload.profile_id, target["ai_review_id"])
+        if not context:
+            continue
+        if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+            continue
+        estimated_input_tokens += estimate_llm_tokens(
+            profile_context,
+            context.get("title", ""),
+            context.get("source_name", ""),
+            context.get("category", ""),
+            context.get("summary", ""),
+        )
+        try:
+            refined = await refine_editor_review_item(api_key, context, profile_context)
+            estimated_output_tokens += estimate_llm_tokens(json.dumps(refined, ensure_ascii=False))
+            updated = database.update_ai_editor_review_classification(
+                profile_id=payload.profile_id,
+                ai_review_id=target["ai_review_id"],
+                review=refined
+            )
+            results.append({
+                "index": index,
+                "id": updated.get("id"),
+                "item_type": updated.get("item_type"),
+                "item_id": updated.get("item_id"),
+                "title": context.get("title", ""),
+                "source_name": context.get("source_name", ""),
+                "previous_bucket": target.get("primary_bucket"),
+                "primary_bucket": updated.get("primary_bucket"),
+                "score": updated.get("score"),
+                "confidence": updated.get("confidence"),
+                "reason": updated.get("reason"),
+                "suggested_tags": updated.get("suggested_tags", ""),
+                "classification_source": updated.get("classification_source"),
+            })
+        except Exception as exc:
+            return {
+                "success": False,
+                "completed": len(results),
+                "target_count": len(targets),
+                "error": str(exc),
+                "results": results,
+                "usage_estimate": {
+                    "calls": len(results),
+                    "input_tokens": estimated_input_tokens,
+                    "output_tokens": estimated_output_tokens,
+                    "total_tokens": estimated_input_tokens + estimated_output_tokens,
+                    "note": "SDK usage metadata is not exposed here, so this is a rough character-based estimate."
+                }
+            }
+
+    elapsed_seconds = round((datetime.now() - started_at).total_seconds(), 1)
+    bucket_counts: Dict[str, int] = {}
+    for result in results:
+        bucket = result.get("primary_bucket") or "unknown"
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    return {
+        "success": True,
+        "target_count": len(targets),
+        "completed": len(results),
+        "elapsed_seconds": elapsed_seconds,
+        "bucket_counts": bucket_counts,
+        "results": results,
+        "usage_estimate": {
+            "calls": len(results),
+            "input_tokens": estimated_input_tokens,
+            "output_tokens": estimated_output_tokens,
+            "total_tokens": estimated_input_tokens + estimated_output_tokens,
+            "note": "SDK usage metadata is not exposed here, so this is a rough character-based estimate."
+        }
+    }
 
 @app.post("/api/editor/judgments")
 async def api_save_editor_judgment(payload: EditorJudgmentPayload):
