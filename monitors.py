@@ -2,14 +2,13 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import ssl
-from typing import List, Dict
+import certifi
+from typing import Callable, Dict, List
 import datetime
 
 def fetch_xml(url: str) -> str:
     """Fetches raw content from a URL using urllib."""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = ssl.create_default_context(cafile=certifi.where())
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -63,7 +62,8 @@ def parse_feed(xml_data: str) -> List[Dict[str, str]]:
                     "title": title.strip(),
                     "link": link.strip(),
                     "description": description.strip() if description else "",
-                    "date": date_str.strip()
+                    "date": date_str.strip(),
+                    "source": "",
                 })
         else:
             # Standard RSS
@@ -79,12 +79,16 @@ def parse_feed(xml_data: str) -> List[Dict[str, str]]:
                 
                 date_el = item.find('pubDate')
                 date_str = date_el.text if date_el is not None else ""
+
+                source_el = item.find('source')
+                source = source_el.text if source_el is not None and source_el.text else ""
                 
                 entries.append({
                     "title": title.strip(),
                     "link": link.strip(),
                     "description": description.strip() if description else "",
-                    "date": date_str.strip()
+                    "date": date_str.strip(),
+                    "source": source.strip(),
                 })
                 
     except Exception as e:
@@ -109,6 +113,20 @@ def search_google_news(keyword: str, recency_days: int = 2) -> List[Dict[str, st
     
     # Return top 10 news items
     return all_news[:10]
+
+
+TREND_NEWS_PROVIDERS: Dict[str, Callable[[str, int], List[Dict[str, str]]]] = {
+    "google_news": search_google_news,
+}
+
+
+def search_trend_news(keyword: str, recency_days: int = 2, provider: str = "google_news") -> List[Dict[str, str]]:
+    """Fetch trend items through a replaceable provider boundary."""
+    fetcher = TREND_NEWS_PROVIDERS.get(provider)
+    if not fetcher:
+        print(f"Unknown trend news provider '{provider}'.")
+        return []
+    return fetcher(keyword, recency_days)
 
 if __name__ == "__main__":
     # Test feed parser

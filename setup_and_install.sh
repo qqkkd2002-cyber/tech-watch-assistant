@@ -33,6 +33,14 @@ else
     echo "google-antigravity is already installed."
 fi
 
+$PYTHON_PATH -c "import bs4, certifi" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Installing article extraction dependencies..."
+    $PYTHON_PATH -m pip install beautifulsoup4 certifi || $PYTHON_PATH -m pip install --user beautifulsoup4 certifi
+else
+    echo "Article extraction dependencies are already installed."
+fi
+
 # 3. Create LaunchAgent plist file
 PLIST_PATH="$HOME/Library/LaunchAgents/com.user.techwatchassistant.plist"
 echo "Creating LaunchAgent configuration at: $PLIST_PATH"

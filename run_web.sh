@@ -19,11 +19,11 @@ echo "Python version: $($PYTHON_BIN --version)"
 
 # 2. Check and install dependencies
 echo ""
-echo "[2/4] Verifying python dependencies (FastAPI, Uvicorn)..."
-$PYTHON_BIN -c "import fastapi, uvicorn" 2>/dev/null
+echo "[2/4] Verifying python dependencies (FastAPI, Uvicorn, BeautifulSoup, certifi)..."
+$PYTHON_BIN -c "import fastapi, uvicorn, bs4, certifi" 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo "Dependencies missing. Installing fastapi & uvicorn..."
-    $PYTHON_BIN -m pip install fastapi uvicorn
+    echo "Dependencies missing. Installing required packages..."
+    $PYTHON_BIN -m pip install fastapi uvicorn beautifulsoup4 certifi
     if [ $? -ne 0 ]; then
         echo "❌ Error installing dependencies. Make sure pip is installed."
         exit 1

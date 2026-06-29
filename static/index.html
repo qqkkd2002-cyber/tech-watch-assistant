@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260626-v2-archive-state">
+    <link rel="stylesheet" href="style.css?v=20260629-trend-content-pilot">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -52,6 +52,7 @@
                         </div>
                         <div id="auto-scan-next">다음 예정 확인 중</div>
                         <div id="auto-scan-latest">최근 수집 확인 중</div>
+                        <div id="content-pipeline-warning" class="content-pipeline-warning" hidden></div>
                     </div>
                     <div class="scan-btn-group" style="margin-bottom: 8px;">
                         <button id="start-scan-btn" class="btn success">▶️ 지금 수동 수집</button>
@@ -138,7 +139,7 @@
                         </div>
                         <div class="insight-panel-actions">
                             <button id="summarize-review-queue-btn" class="glass-btn subtle" type="button">검토 대기 5개 요약</button>
-                            <button id="refine-review-queue-btn" class="glass-btn subtle" type="button">트렌드 15개 파일럿 분류</button>
+                            <button id="refine-review-queue-btn" class="glass-btn subtle" type="button">Gemma 소급 준비 확인</button>
                             <button id="generate-insight-candidates-btn" class="glass-btn" type="button">AI 후보 정리</button>
                         </div>
                     </div>
@@ -1140,6 +1141,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260626-v2-archive-state"></script>
+    <script src="app.js?v=20260629-trend-content-pilot"></script>
 </body>
 </html>

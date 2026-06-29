@@ -62,6 +62,15 @@ function getStarredReasonLabel(reason) {
     return "수동 저장";
 }
 
+function isContentPending(item) {
+    const status = String(item.content_status || "");
+    return status && status !== "not_attempted" && status !== "summarized";
+}
+
+function getPendingLabel(item) {
+    return isContentPending(item) ? "본문 확보 대기" : "AI 요약 대기";
+}
+
 function createFeedCard(item, tabType) {
     const card = document.createElement("div");
     
@@ -84,6 +93,7 @@ function createFeedCard(item, tabType) {
         
     const itemType = item.type === "doc" ? "doc" : "trend";
     const isAnalysisPending = item.analysis_status === "pending";
+    const contentPending = itemType === "trend" && isContentPending(item);
     const starReason = tabType === "starred" ? getStarredReason(item) : "";
     const starReasonBadge = tabType === "starred"
         ? `<span class="badge badge-star-reason reason-${starReason}">${getStarredReasonLabel(starReason)}</span>`
@@ -103,7 +113,7 @@ function createFeedCard(item, tabType) {
         if (item.retry_count >= 5) {
             pendingBadge = `<span class="badge badge-pending" style="background: linear-gradient(135deg, var(--color-danger), #dc2626); box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);">AI 요약 실패</span>`;
         } else {
-            pendingBadge = `<span class="badge badge-pending">AI 요약 대기</span>`;
+            pendingBadge = `<span class="badge badge-pending">${getPendingLabel(item)}</span>`;
         }
     }
     
@@ -122,7 +132,7 @@ function createFeedCard(item, tabType) {
     if (cardType === "doc" || cardType === "reference") {
         const kwTags = item.keywords ? item.keywords.split(",").map(k => `<span class="tag">${escapeHtml(k.trim())}</span>`).join("") : "";
         const summaryText = isAnalysisPending 
-            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">AI 요약을 아직 생성하지 않았습니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 설명]<br>${escapeHtml(item.summary)}</p>`
             : `<p>${escapeHtml(item.summary)}</p>`;
             
         collapsibleHtml = `
@@ -139,7 +149,7 @@ function createFeedCard(item, tabType) {
     } else {
         // Trend
         const summaryText = isAnalysisPending 
-            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">${contentPending ? "원문을 확보하지 못해 요약하지 않았습니다." : "AI 요약을 아직 생성하지 않았습니다."}</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 설명]<br>${escapeHtml(item.summary)}</p>`
             : `<p>${escapeHtml(item.summary)}</p>`;
             
         collapsibleHtml = `
@@ -173,7 +183,7 @@ function createFeedCard(item, tabType) {
         </div>
         <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
             <button class="summary-toggle-btn">📄 AI 요약 보기</button>
-            ${isAnalysisPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
+            ${isAnalysisPending && !contentPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
         </div>
         ${collapsibleHtml}
         ${editorActionsHtml}
@@ -334,6 +344,7 @@ const DOM = {
     insightCandidateStatus: document.getElementById("insight-candidate-status"),
     insightCandidateBuckets: document.getElementById("insight-candidate-buckets"),
     retrySummaryBtn: document.getElementById("retry-summary-btn"),
+    contentPipelineWarning: document.getElementById("content-pipeline-warning"),
 };
 
 // --- Initialization ---
@@ -1700,6 +1711,7 @@ async function handleSidebarAutoScanToggle() {
         if (res.ok) {
             const data = await res.json();
             updateAutoScanInfo(data.auto_scan);
+            updateContentPipelineWarning(data.content_pipeline);
         }
     } finally {
         DOM.sidebarAutoScanToggle.classList.remove("is-saving");
@@ -2482,6 +2494,18 @@ function updateAutoScanInfo(info) {
     }
 }
 
+function updateContentPipelineWarning(info) {
+    const warning = DOM.contentPipelineWarning;
+    if (!warning) return;
+    if (!info?.warning) {
+        warning.hidden = true;
+        warning.textContent = "";
+        return;
+    }
+    warning.textContent = `본문 확보 실패 ${Math.round(Number(info.failure_rate || 0) * 100)}% · 시스템 로그 확인`;
+    warning.hidden = false;
+}
+
 function updateRunStatus(status, label) {
     DOM.statusTexts.forEach(el => {
         el.textContent = label;
@@ -3064,14 +3088,15 @@ function renderInsightCard(item) {
         ? `<div class="insight-card-tags">${tags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
         : "";
     const isSummaryPending = item.analysis_status === "pending";
+    const contentPending = item.item_type === "trend" && isContentPending(item);
     const summaryText = getInsightSummaryText(item);
     const summaryHtml = `
         <div class="insight-card-summary ${isSummaryPending ? "is-pending" : ""}">
-            <div class="insight-card-summary-label">${isSummaryPending ? "수집 원문" : "AI 요약"}</div>
+            <div class="insight-card-summary-label">${isSummaryPending ? "수집 설명" : "AI 요약"}</div>
             <p>${escapeHtml(summaryText || "요약 내용이 아직 없습니다.")}</p>
         </div>
     `;
-    const summaryActionHtml = isSummaryPending
+    const summaryActionHtml = isSummaryPending && !contentPending
         ? `<button class="insight-summary-btn" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">AI 요약 생성</button>`
         : "";
     const isPrecisionClassified = item.classification_source === "llm";
@@ -3086,7 +3111,7 @@ function renderInsightCard(item) {
             <div class="insight-card-meta">
                 <span>${escapeHtml(source)}</span>
                 <span>${escapeHtml(dateText)}</span>
-                <span>${item.analysis_status === "pending" ? "AI 요약 대기" : "요약 완료"}</span>
+                <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
                 <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
             </div>
             <div class="insight-card-score">
@@ -3204,7 +3229,7 @@ async function refineInsightReview(aiReviewId) {
     if (!currentProfileId || !aiReviewId) {
         throw new Error("정밀 분류할 후보 정보가 부족합니다.");
     }
-    const res = await fetch("/api/editor/reviews/refine", {
+    const res = await fetch("/api/editor/reviews/refine-ollama", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3249,43 +3274,32 @@ async function handleRefineReviewQueue() {
     const btn = DOM.refineReviewQueueBtn;
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = "파일럿 분류 중";
+    btn.textContent = "준비 확인 중";
 
     try {
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = "트렌드 검토 대기 후보를 제한된 범위로 정밀 분류하고 있습니다.";
+            DOM.insightCandidateStatus.textContent = "로컬 Gemma와 안전하게 분류할 수 있는 자료 수를 확인하고 있습니다.";
         }
-        const res = await fetch("/api/editor/reviews/refine-pilot", {
+        const res = await fetch("/api/editor/reviews/ollama-backfill", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 profile_id: currentProfileId,
-                item_type: "trend",
-                limit: 15
+                limit: 200,
+                execute: false
             })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.success === false) {
-            throw new Error(data.detail || data.error || "파일럿 정밀 분류에 실패했습니다.");
+            throw new Error(data.detail || data.error || "Gemma 소급 준비 확인에 실패했습니다.");
         }
-        const counts = data.bucket_counts || {};
-        const usage = data.usage_estimate || {};
-        const countText = [
-            `업무 ${counts.work_signal || 0}`,
-            `학습 ${counts.learning_signal || 0}`,
-            `노이즈 ${counts.noise || 0}`,
-            `검토 ${counts.review_queue || 0}`
-        ].join(" · ");
-        const tokenText = usage.total_tokens ? ` · 추정 ${Number(usage.total_tokens).toLocaleString()} tokens` : "";
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = `파일럿 ${data.completed || 0}/${data.target_count || 0}개 완료: ${countText}${tokenText}`;
+            DOM.insightCandidateStatus.textContent = `Gemma 준비 완료: 분류 가능 ${data.eligible_count || 0}개 · 근거 부족 ${data.insufficient_count || 0}개 · 실제 소급은 실행하지 않았습니다.`;
         }
-        await loadInsightCandidates();
     } catch (e) {
         if (DOM.insightCandidateStatus) {
-            DOM.insightCandidateStatus.textContent = `파일럿 정밀 분류 중단: ${e.message}`;
+            DOM.insightCandidateStatus.textContent = `Gemma 준비 확인 실패: ${e.message}`;
         }
-        await loadInsightCandidates();
     } finally {
         btn.disabled = false;
         btn.textContent = originalText;

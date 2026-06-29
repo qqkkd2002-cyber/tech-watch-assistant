@@ -215,6 +215,17 @@ The star/archive behavior should remain, but it should no longer be the main way
 
 ## MVP Roadmap
 
+## Backlog - One-Time Historical Trend Recovery
+
+Run only after the new-article content pipeline, the pending document summaries, and the safe classification backfill are stable.
+
+- Apply the same resolve -> extract -> summarize -> classify flow to historical trend shells once.
+- Do not overwrite user judgments or `manual_saved` state.
+- Treat this as optional asset recovery, not model learning.
+- User corrections between `ai_editor_reviews` and `editor_judgments` remain the learning data.
+- Prioritize direct technical-blog URLs; Google News historical recovery is lowest priority.
+- Never run this backlog automatically or as part of the new-article pipeline.
+
 ### MVP 1 - Keep The Current Foundation
 
 Already started:

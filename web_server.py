@@ -3,9 +3,12 @@ import os
 import json
 import asyncio
 import platform
+import re
 import ssl
 import urllib.request
 import urllib.parse
+from html import unescape
+from html.parser import HTMLParser
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
@@ -49,6 +52,7 @@ scan_status = "idle"  # "idle" or "running"
 active_profile_id: Optional[int] = None
 auto_scheduler_task: Optional[asyncio.Task] = None
 last_auto_scan_attempts: Dict[int, datetime] = {}
+EDITOR_OLLAMA_MODEL = os.environ.get("EDITOR_OLLAMA_MODEL", "gemma4:latest")
 
 # Default Admin Passcode from config.json or fallback
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -119,6 +123,11 @@ class EditorReviewPilotPayload(BaseModel):
     profile_id: int
     limit: int = 15
     item_type: str = "trend"
+
+class EditorOllamaBackfillPayload(BaseModel):
+    profile_id: int
+    limit: int = 200
+    execute: bool = False
 
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
@@ -338,16 +347,70 @@ def build_editor_profile_context(profile_id: int) -> str:
         "\n".join(reference_lines) if reference_lines else "- No reference feeds configured",
     ])
 
-async def refine_editor_review_item(api_key: str, item: Dict[str, Any], profile_context: str = "") -> Dict[str, Any]:
+class _EditorHTMLTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: List[str] = []
+
+    def handle_data(self, data: str) -> None:
+        if data.strip():
+            self.parts.append(data.strip())
+
+
+def clean_editor_evidence_text(value: str) -> str:
+    parser = _EditorHTMLTextExtractor()
+    try:
+        parser.feed(value or "")
+        text = " ".join(parser.parts)
+    except Exception:
+        text = value or ""
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def assess_editor_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
+    raw_summary = str(item.get("summary", "") or "").strip()
+    cleaned_summary = clean_editor_evidence_text(raw_summary)
+    contains_html = bool(re.search(r"<[^>]+>", raw_summary))
+    minimum_length = 180 if contains_html else 120
+    sufficient = len(cleaned_summary) >= minimum_length
+    return {
+        "sufficient": sufficient,
+        "cleaned_summary": cleaned_summary,
+        "cleaned_length": len(cleaned_summary),
+        "minimum_length": minimum_length,
+        "contains_html": contains_html,
+    }
+
+
+def _supported_evidence_points(points: Any, evidence_text: str) -> List[str]:
+    if not isinstance(points, list):
+        return []
+    normalized_evidence = re.sub(r"[^0-9a-zA-Z가-힣]+", " ", evidence_text.lower())
+    supported: List[str] = []
+    stopwords = {"기사", "내용", "관련", "대한", "통해", "위한", "있습니다", "합니다", "시장", "전략", "기술"}
+    for raw_point in points[:3]:
+        point = re.sub(r"\s+", " ", str(raw_point or "")).strip()
+        tokens = [
+            token for token in re.sub(r"[^0-9a-zA-Z가-힣]+", " ", point.lower()).split()
+            if len(token) >= 2 and token not in stopwords
+        ]
+        matched = [token for token in tokens if token in normalized_evidence]
+        if len(matched) >= 2 or any(len(token) >= 7 for token in matched):
+            supported.append(point)
+    return supported
+
+
+def build_editor_classification_prompt(item: Dict[str, Any], profile_context: str = "") -> str:
     fixed_tag_lines = "\n".join([
         f"- {key}: {label}"
         for key, label in database.SUGGESTED_TAG_LABELS.items()
     ])
-    summary_text = item.get("summary", "") or ""
+    evidence = assess_editor_evidence(item)
+    summary_text = evidence["cleaned_summary"]
     if len(summary_text) > 2600:
         summary_text = summary_text[:2600].rstrip() + "..."
 
-    prompt = f"""
+    return f"""
 You are classifying one collected monitoring item for a Korean solution strategy team.
 
 Product identity:
@@ -387,25 +450,46 @@ Rules:
 - score means reusable strategic value, 0-100.
 - confidence means confidence in the classification, 0-100.
 
+User-specific editorial standard:
+- This user applies a strict threshold to learning_signal. An item is not valuable merely because it mentions finance, AI, education, collaboration, or an industry trend.
+- Classify as noise when an item is mainly about recruitment, general talent training, education, awards, ceremonies, appointments, retirements, or general events, and lacks concrete product changes, technical mechanisms, regulatory requirements, adoption evidence, or reusable implications.
+- Classify as noise when it is merely interesting news rather than reusable knowledge that could provide meaningful evidence or reasoning in a future strategy document.
+- Classify as learning_signal only when the item contains transferable technical concepts, architecture, operating methods, governance principles, or meaningful market mechanisms that could improve a later strategic judgment. General awareness alone is insufficient.
+- Classify as work_signal only when the item directly supports the user's product strategy, competitor analysis, proposal, customer discussion, regulation response, or positioning with concrete reusable facts.
+- Monitoring keywords, category labels, and bracketed prefixes in the title are collection metadata. They are not evidence that the article itself is relevant. Judge the actual article content and ignore a misleading keyword match.
+- Do not use vague phrases such as "useful for understanding a broad trend" or "related to the user's keywords" as the sole reason for learning_signal. A signal reason must name at least one concrete reusable mechanism, fact, product change, adoption case, regulatory change, or operating method from the item.
+- If no such concrete detail can be named, use noise for generic event/announcement content. Use review_queue with confidence 65 or lower only when the item appears potentially important but the supplied title and summary are genuinely insufficient to decide.
+
+Calibration examples:
+1. Generic financial-sector AI talent training or recruitment news without concrete technology or policy implications -> noise.
+2. An award ceremony or general collaboration announcement without product, adoption, or strategic evidence -> noise.
+3. Relaxation of financial network-separation regulations, including security obligations and effects on AI/SaaS adoption -> work_signal.
+4. A concrete AI governance framework or reusable engineering method not directly tied to the user's product -> learning_signal.
+5. A competitor product release containing specific capabilities, target customers, deployment model, or positioning changes -> work_signal.
+
+Important exceptions and safeguards:
+- Do not classify an item as noise solely because it is a press release, education program, award, or partnership. Preserve it as a signal when it contains concrete evidence of product adoption, competitor movement, regulation, or market change.
+- When the title and summary do not provide enough evidence, use review_queue and lower confidence instead of inventing details.
+- Write the reason in natural Korean and cite concrete details from the item.
+
 JSON schema:
 {{
   "primary_bucket": "review_queue|work_signal|learning_signal|noise",
   "score": 0,
   "confidence": 0,
   "reason": "한국어 1-2문장. 이 항목이 나중에 왜 쓸 만한지 또는 왜 노이즈인지 구체적으로 설명",
+  "evidence_points": ["제공된 제목·요약에서 직접 확인되는 구체 사실"],
   "suggested_tags": ["competitor"],
   "related_theme": "짧은 한국어 테마"
 }}
 """
-    sdk_config = LocalAgentConfig(
-        api_key=api_key,
-        system_instructions="You classify collected monitoring items for a Korean strategy team. Return valid JSON only."
-    )
-    async with Agent(config=sdk_config) as ai_agent:
-        response = await ai_agent.chat(prompt)
-        text = await response.text()
 
-    result = extract_json_object(text)
+
+def normalize_editor_classification_result(
+    result: Dict[str, Any],
+    item: Dict[str, Any],
+    model_name: str,
+) -> Dict[str, Any]:
     bucket = str(result.get("primary_bucket", "review_queue")).strip()
     if bucket == "insight":
         bucket = "work_signal"
@@ -418,25 +502,233 @@ JSON schema:
         except Exception:
             return default
 
-    tags = database.normalize_editor_tags(result.get("suggested_tags", []), limit=4)
+    evidence = assess_editor_evidence(item)
+    evidence_points = _supported_evidence_points(
+        result.get("evidence_points", []),
+        evidence["cleaned_summary"],
+    )
+    forced_review_reason = ""
+    if not evidence["sufficient"]:
+        bucket = "review_queue"
+        forced_review_reason = (
+            f"제목과 출처 외에 판단할 설명이 부족하여 자동 확정하지 않았습니다. "
+            f"요약 또는 원문을 확보한 뒤 다시 분류해야 합니다."
+        )
+    elif bucket in ("work_signal", "learning_signal") and not evidence_points:
+        bucket = "review_queue"
+        forced_review_reason = "제공된 설명에서 직접 확인되는 구체 근거를 찾지 못해 자동 확정하지 않았습니다."
+
+    tags = database.normalize_editor_tags(
+        result.get("suggested_tags", item.get("suggested_tags", [])),
+        limit=4,
+    )
     if not tags:
         tags = ["technical_reference"]
 
-    reason = str(result.get("reason", "")).strip()
+    reason = forced_review_reason or str(result.get("reason", "")).strip()
     if not reason:
         reason = "이 항목의 재사용 가치 판단을 위해 정밀 분류를 실행했지만, 구체 이유가 비어 있어 검토 대기로 남겼습니다."
 
     return {
         "primary_bucket": bucket,
-        "score": clamp_score(result.get("score"), 55),
-        "confidence": clamp_score(result.get("confidence"), 60),
+        "score": min(clamp_score(result.get("score"), 55), 55) if forced_review_reason else clamp_score(result.get("score"), 55),
+        "confidence": min(clamp_score(result.get("confidence"), 60), 65) if forced_review_reason else clamp_score(result.get("confidence"), 60),
         "reason": reason,
+        "evidence_points": evidence_points,
+        "evidence_quality": {
+            "sufficient": evidence["sufficient"],
+            "cleaned_length": evidence["cleaned_length"],
+            "minimum_length": evidence["minimum_length"],
+            "contains_html": evidence["contains_html"],
+        },
         "suggested_tags": tags,
         "secondary_buckets": tags,
         "related_theme": str(result.get("related_theme", "")).strip() or item.get("category") or item.get("source_name") or "전략 신호",
         "classification_source": "llm",
-        "model_name": "gemini",
-        "prompt_version": "reuse-value-profile-v2",
+        "model_name": model_name,
+        "prompt_version": "reuse-value-profile-v3",
+    }
+
+
+async def refine_editor_review_item(api_key: str, item: Dict[str, Any], profile_context: str = "") -> Dict[str, Any]:
+    if not assess_editor_evidence(item)["sufficient"]:
+        return normalize_editor_classification_result({}, item, "gemini")
+    prompt = build_editor_classification_prompt(item, profile_context)
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You classify collected monitoring items for a Korean strategy team. Return valid JSON only."
+    )
+    async with Agent(config=sdk_config) as ai_agent:
+        response = await ai_agent.chat(prompt)
+        text = await response.text()
+
+    result = extract_json_object(text)
+    return normalize_editor_classification_result(result, item, "gemini")
+
+
+def refine_editor_review_item_ollama(
+    model: str,
+    item: Dict[str, Any],
+    profile_context: str = "",
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    if not assess_editor_evidence(item)["sufficient"]:
+        normalized = normalize_editor_classification_result({}, item, f"ollama:{model}")
+        normalized["runtime"] = {
+            "total_duration_ns": 0,
+            "load_duration_ns": 0,
+            "prompt_eval_count": 0,
+            "eval_count": 0,
+            "skipped": True,
+        }
+        return normalized
+    prompt = build_editor_classification_prompt(item, profile_context)
+    payload = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "system": "You classify collected monitoring items for a Korean strategy team. Return valid JSON only.",
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0},
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "http://127.0.0.1:11434/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        raw = json.load(response)
+
+    parsed = extract_json_object(raw.get("response", ""))
+    normalized = normalize_editor_classification_result(parsed, item, f"ollama:{model}")
+    normalized["runtime"] = {
+        "total_duration_ns": int(raw.get("total_duration") or 0),
+        "load_duration_ns": int(raw.get("load_duration") or 0),
+        "prompt_eval_count": int(raw.get("prompt_eval_count") or 0),
+        "eval_count": int(raw.get("eval_count") or 0),
+    }
+    return normalized
+
+
+def get_ollama_status(model: str = EDITOR_OLLAMA_MODEL, timeout_seconds: int = 3) -> Dict[str, Any]:
+    try:
+        request = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.load(response)
+        model_names = [str(entry.get("name", "")) for entry in payload.get("models", [])]
+        return {
+            "available": model in model_names,
+            "model": model,
+            "installed_models": model_names,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "model": model,
+            "installed_models": [],
+            "error": str(exc),
+        }
+
+
+def get_ollama_backfill_preview(profile_id: int, limit: int = 2000) -> Dict[str, Any]:
+    candidates = database.get_editor_ollama_backfill_candidates(profile_id, limit=limit)
+    eligible = []
+    insufficient = []
+    for item in candidates:
+        quality = assess_editor_evidence(item)
+        preview_item = {
+            "ai_review_id": item.get("ai_review_id"),
+            "item_type": item.get("item_type"),
+            "item_id": item.get("item_id"),
+            "title": item.get("title", ""),
+            "source_name": item.get("source_name", ""),
+            "category": item.get("category", ""),
+            "manual_saved": int(item.get("manual_saved") or 0),
+            "evidence_quality": {
+                "sufficient": quality["sufficient"],
+                "cleaned_length": quality["cleaned_length"],
+                "minimum_length": quality["minimum_length"],
+                "contains_html": quality["contains_html"],
+            },
+        }
+        if quality["sufficient"]:
+            eligible.append({**item, **preview_item})
+        else:
+            insufficient.append(preview_item)
+
+    return {
+        "profile_id": profile_id,
+        "model": EDITOR_OLLAMA_MODEL,
+        "candidate_count": len(candidates),
+        "eligible_count": len(eligible),
+        "insufficient_count": len(insufficient),
+        "manual_saved_eligible_count": sum(int(item.get("manual_saved") or 0) for item in eligible),
+        "eligible": eligible,
+        "insufficient": insufficient,
+    }
+
+
+def _prepare_operational_review(review: Dict[str, Any]) -> Dict[str, Any]:
+    prepared = dict(review)
+    points = [str(point).strip() for point in prepared.get("evidence_points", []) if str(point).strip()]
+    if points:
+        prepared["reason"] = f"{prepared.get('reason', '').strip()}\n[근거] {' | '.join(points)}".strip()
+    return prepared
+
+
+def run_ollama_backfill(profile_id: int, limit: int = 200) -> Dict[str, Any]:
+    ollama = get_ollama_status()
+    if not ollama["available"]:
+        raise RuntimeError("Ollama 또는 gemma4:latest 모델을 사용할 수 없어 아무 항목도 변경하지 않았습니다.")
+
+    preview = get_ollama_backfill_preview(profile_id, limit=2000)
+    targets = preview["eligible"][:max(1, min(int(limit or 200), 500))]
+    profile_context = build_editor_profile_context(profile_id)
+    results = []
+    started_at = datetime.now()
+
+    for item in targets:
+        if database.has_user_editor_judgment(profile_id, item["item_type"], item["item_id"]):
+            continue
+        review = refine_editor_review_item_ollama(EDITOR_OLLAMA_MODEL, item, profile_context)
+        review = _prepare_operational_review(review)
+        if item.get("ai_review_id"):
+            saved = database.update_ai_editor_review_classification(
+                profile_id=profile_id,
+                ai_review_id=int(item["ai_review_id"]),
+                review=review,
+            )
+        else:
+            saved = database.save_ai_editor_review(
+                profile_id=profile_id,
+                item_type=item["item_type"],
+                item_id=int(item["item_id"]),
+                review=review,
+            )
+        results.append({
+            "ai_review_id": saved.get("id"),
+            "item_type": item["item_type"],
+            "item_id": item["item_id"],
+            "title": item.get("title", ""),
+            "primary_bucket": review.get("primary_bucket"),
+            "score": review.get("score"),
+            "confidence": review.get("confidence"),
+            "evidence_points": review.get("evidence_points", []),
+        })
+
+    bucket_counts: Dict[str, int] = {}
+    for result in results:
+        bucket = result.get("primary_bucket") or "unknown"
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+    return {
+        "success": True,
+        "model": EDITOR_OLLAMA_MODEL,
+        "target_count": len(targets),
+        "completed": len(results),
+        "elapsed_seconds": round((datetime.now() - started_at).total_seconds(), 1),
+        "bucket_counts": bucket_counts,
+        "results": results,
     }
 
 def estimate_llm_tokens(*texts: str) -> int:
@@ -652,11 +944,14 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
 async def get_status(request: Request, profile_id: Optional[int] = None):
     """Returns the status and current live logs."""
     tail_logs = active_logs[-300:]
+    auto_scan_info = get_profile_auto_scan_info(profile_id)
+    selected_profile_id = auto_scan_info.get("profile_id")
     return {
         "status": scan_status,
         "active_profile_id": active_profile_id,
         "is_admin": is_localhost(request),
-        "auto_scan": get_profile_auto_scan_info(profile_id),
+        "auto_scan": auto_scan_info,
+        "content_pipeline": database.get_trend_content_pipeline_stats(selected_profile_id) if selected_profile_id else {},
         "log_line_count": len(active_logs),
         "logs": "".join(tail_logs)
     }
@@ -1220,6 +1515,68 @@ async def api_refine_editor_review(payload: EditorReviewRefinePayload):
         raise HTTPException(status_code=500, detail=f"정밀 분류 실패: {exc}")
 
     return {"success": True, "review": updated}
+
+@app.post("/api/editor/reviews/refine-ollama")
+async def api_refine_editor_review_ollama(payload: EditorReviewRefinePayload):
+    """Runs one operational precision classification with the local Gemma model."""
+    context = database.get_ai_editor_review_context(payload.profile_id, payload.ai_review_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Active AI review not found.")
+    if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+        raise HTTPException(status_code=400, detail="이미 사용자가 판단한 카드라 로컬 AI가 다시 덮어쓰지 않습니다.")
+
+    ollama = await asyncio.to_thread(get_ollama_status)
+    if not ollama["available"]:
+        raise HTTPException(status_code=503, detail="Ollama 또는 gemma4:latest가 실행 중이 아니어서 분류 대기로 남겼습니다.")
+
+    try:
+        profile_context = build_editor_profile_context(payload.profile_id)
+        refined = await asyncio.to_thread(
+            refine_editor_review_item_ollama,
+            EDITOR_OLLAMA_MODEL,
+            context,
+            profile_context,
+        )
+        refined = _prepare_operational_review(refined)
+        updated = database.update_ai_editor_review_classification(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            review=refined,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"로컬 정밀 분류 실패: {exc}")
+    return {"success": True, "provider": "ollama", "model": EDITOR_OLLAMA_MODEL, "review": updated}
+
+@app.get("/api/editor/reviews/ollama-preview")
+async def api_get_editor_ollama_preview(profile_id: int, limit: int = 2000):
+    """Previews eligible backfill items without modifying editor-review data."""
+    preview = get_ollama_backfill_preview(profile_id, limit=limit)
+    preview["ollama"] = await asyncio.to_thread(get_ollama_status)
+    preview["eligible"] = preview["eligible"][:20]
+    preview["insufficient"] = preview["insufficient"][:20]
+    return preview
+
+@app.post("/api/editor/reviews/ollama-backfill")
+async def api_run_editor_ollama_backfill(payload: EditorOllamaBackfillPayload):
+    """Runs an explicitly confirmed, one-time local-model backfill."""
+    preview = get_ollama_backfill_preview(payload.profile_id, limit=2000)
+    if not payload.execute:
+        return {
+            "success": True,
+            "executed": False,
+            "message": "미리보기만 수행했습니다. 운영 DB는 변경하지 않았습니다.",
+            "model": EDITOR_OLLAMA_MODEL,
+            "eligible_count": preview["eligible_count"],
+            "insufficient_count": preview["insufficient_count"],
+            "manual_saved_eligible_count": preview["manual_saved_eligible_count"],
+        }
+    try:
+        result = await asyncio.to_thread(run_ollama_backfill, payload.profile_id, payload.limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {**result, "executed": True}
 
 @app.post("/api/editor/reviews/refine-pilot")
 async def api_refine_editor_reviews_pilot(payload: EditorReviewPilotPayload):

@@ -255,6 +255,26 @@ def init_db():
     if 'manual_saved' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN manual_saved INTEGER DEFAULT 0")
         cursor.execute("UPDATE scanned_trends SET manual_saved = COALESCE(is_starred, 0)")
+    if 'original_url' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN original_url TEXT DEFAULT ''")
+    if 'source_url' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN source_url TEXT DEFAULT ''")
+    if 'content_status' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_status TEXT DEFAULT 'not_attempted'")
+    if 'content_error' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_error TEXT DEFAULT ''")
+    if 'content_chars' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_chars INTEGER DEFAULT 0")
+    if 'content_extractor' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_extractor TEXT DEFAULT ''")
+    if 'content_resolver' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_resolver TEXT DEFAULT ''")
+    if 'summary_model' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN summary_model TEXT DEFAULT ''")
+    if 'summary_evidence' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN summary_evidence TEXT DEFAULT '[]'")
+    if 'matched_keywords' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN matched_keywords TEXT DEFAULT ''")
     if 'published_at' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN published_at TEXT DEFAULT ''")
     if 'analysis_status' not in trend_cols:
@@ -685,14 +705,107 @@ def get_scanned_trend_titles(profile_id: int) -> List[str]:
     conn.close()
     return [r['title'] for r in rows]
 
-def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, summary: str, source: str, published_at: str = "", analysis_status: str = "complete", analysis_error: str = "") -> bool:
+def _merge_keyword_text(existing: str, keyword: str) -> str:
+    values = [value.strip() for value in (existing or "").split(",") if value.strip()]
+    if keyword and keyword not in values:
+        values.append(keyword)
+    return ",".join(values)
+
+def find_scanned_trend_by_url(
+    profile_id: int,
+    link: str = "",
+    original_url: str = "",
+    source_url: str = "",
+) -> Optional[Dict[str, Any]]:
+    candidates = [value.strip() for value in (link, original_url, source_url) if value and value.strip()]
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            """INSERT INTO scanned_trends (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error)
+            f"""
+            SELECT * FROM scanned_trends
+            WHERE profile_id = ?
+              AND (link IN ({placeholders}) OR original_url IN ({placeholders}) OR source_url IN ({placeholders}))
+            ORDER BY id ASC LIMIT 1
+            """,
+            [profile_id] + candidates + candidates + candidates,
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def merge_scanned_trend_keyword(trend_id: int, keyword: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT keyword, matched_keywords FROM scanned_trends WHERE id = ?", (trend_id,))
+        row = cursor.fetchone()
+        if not row:
+            return
+        merged = _merge_keyword_text(row["matched_keywords"] or row["keyword"] or "", keyword)
+        cursor.execute("UPDATE scanned_trends SET matched_keywords = ? WHERE id = ?", (merged, trend_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def save_scanned_trend(
+    profile_id: int,
+    keyword: str,
+    title: str,
+    link: str,
+    summary: str,
+    source: str,
+    published_at: str = "",
+    analysis_status: str = "complete",
+    analysis_error: str = "",
+    original_url: str = "",
+    source_url: str = "",
+    content_status: str = "not_attempted",
+    content_error: str = "",
+    content_chars: int = 0,
+    content_extractor: str = "",
+    content_resolver: str = "",
+    summary_model: str = "",
+    summary_evidence: Optional[List[str]] = None,
+) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        candidates = [value.strip() for value in (link, original_url, source_url) if value and value.strip()]
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cursor.execute(
+                f"""
+                SELECT id, keyword, matched_keywords FROM scanned_trends
+                WHERE profile_id = ?
+                  AND (link IN ({placeholders}) OR original_url IN ({placeholders}) OR source_url IN ({placeholders}))
+                ORDER BY id ASC LIMIT 1
+                """,
+                [profile_id] + candidates + candidates + candidates,
+            )
+            duplicate = cursor.fetchone()
+            if duplicate:
+                merged = _merge_keyword_text(duplicate["matched_keywords"] or duplicate["keyword"] or "", keyword)
+                cursor.execute("UPDATE scanned_trends SET matched_keywords = ? WHERE id = ?", (merged, duplicate["id"]))
+                conn.commit()
+                return False
+        cursor.execute(
+            """INSERT INTO scanned_trends (
+                   profile_id, keyword, title, link, summary, source, published_at,
+                   analysis_status, analysis_error, original_url, source_url, content_status,
+                   content_error, content_chars, content_extractor, content_resolver, summary_model,
+                   summary_evidence, matched_keywords
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile_id, keyword, title, link, summary, source, published_at,
+                analysis_status, analysis_error, original_url, source_url, content_status,
+                content_error, int(content_chars or 0), content_extractor, content_resolver, summary_model,
+                json.dumps(summary_evidence or [], ensure_ascii=False), keyword,
+            )
         )
         conn.commit()
         return True
@@ -702,6 +815,52 @@ def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, sum
     except Exception as e:
         print(f"[Database] Error saving trend: {e}")
         return False
+    finally:
+        conn.close()
+
+def get_trend_content_pipeline_stats(profile_id: int, hours: int = 24) -> Dict[str, Any]:
+    hours = max(1, min(int(hours or 24), 24 * 30))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT content_status, COUNT(*) AS count
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status != 'not_attempted'
+              AND created_at >= datetime('now', ?)
+            GROUP BY content_status
+            """,
+            (profile_id, f"-{hours} hours"),
+        )
+        counts = {row["content_status"]: int(row["count"] or 0) for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT COALESCE(NULLIF(content_resolver, ''), 'unresolved') AS resolver, COUNT(*) AS count
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status != 'not_attempted'
+              AND created_at >= datetime('now', ?)
+            GROUP BY COALESCE(NULLIF(content_resolver, ''), 'unresolved')
+            """,
+            (profile_id, f"-{hours} hours"),
+        )
+        resolver_counts = {row["resolver"]: int(row["count"] or 0) for row in cursor.fetchall()}
+        attempts = sum(counts.values())
+        successes = counts.get("summarized", 0)
+        failures = attempts - successes
+        failure_rate = round(failures / attempts, 3) if attempts else 0.0
+        return {
+            "hours": hours,
+            "attempts": attempts,
+            "successes": successes,
+            "failures": failures,
+            "failure_rate": failure_rate,
+            "warning": attempts >= 5 and failure_rate >= 0.3,
+            "by_status": counts,
+            "by_resolver": resolver_counts,
+        }
     finally:
         conn.close()
 
@@ -2039,6 +2198,96 @@ def get_editor_refine_pilot_targets(profile_id: int, limit: int = 15, item_type:
             [profile_id, profile_id] + params
         )
         return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) -> List[Dict[str, Any]]:
+    """Returns unjudged raw items that can be previewed before an Ollama backfill."""
+    limit = max(1, min(int(limit or 1000), 2000))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT * FROM (
+                SELECT
+                    ar.id AS ai_review_id,
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    ar.primary_bucket AS existing_bucket,
+                    ar.classification_source,
+                    ar.suggested_tags
+                FROM scanned_docs d
+                LEFT JOIN ai_editor_reviews ar
+                  ON ar.profile_id = d.profile_id
+                 AND ar.item_type = 'doc'
+                 AND ar.item_id = d.id
+                 AND ar.is_active = 1
+                WHERE d.profile_id = ?
+                  AND COALESCE(ar.classification_source, '') != 'llm'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM editor_judgments j
+                      WHERE j.profile_id = d.profile_id
+                        AND j.item_type = 'doc'
+                        AND j.item_id = d.id
+                  )
+
+                UNION ALL
+
+                SELECT
+                    ar.id AS ai_review_id,
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    ar.primary_bucket AS existing_bucket,
+                    ar.classification_source,
+                    ar.suggested_tags
+                FROM scanned_trends t
+                LEFT JOIN ai_editor_reviews ar
+                  ON ar.profile_id = t.profile_id
+                 AND ar.item_type = 'trend'
+                 AND ar.item_id = t.id
+                 AND ar.is_active = 1
+                WHERE t.profile_id = ?
+                  AND COALESCE(ar.classification_source, '') != 'llm'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM editor_judgments j
+                      WHERE j.profile_id = t.profile_id
+                        AND j.item_type = 'trend'
+                        AND j.item_id = t.id
+                  )
+            ) candidates
+            ORDER BY
+                CASE
+                    WHEN item_type = 'doc' AND category = 'reference' THEN 1
+                    WHEN item_type = 'doc' THEN 2
+                    ELSE 3
+                END,
+                COALESCE(NULLIF(published_at, ''), item_created_at) DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
