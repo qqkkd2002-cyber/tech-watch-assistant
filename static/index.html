@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260629-trend-content-pilot">
+    <link rel="stylesheet" href="style.css?v=20260629-trend-content-on">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -52,6 +52,7 @@
                         </div>
                         <div id="auto-scan-next">다음 예정 확인 중</div>
                         <div id="auto-scan-latest">최근 수집 확인 중</div>
+                        <div id="content-pipeline-state">본문 요약 상태 확인 중</div>
                         <div id="content-pipeline-warning" class="content-pipeline-warning" hidden></div>
                     </div>
                     <div class="scan-btn-group" style="margin-bottom: 8px;">
@@ -739,8 +740,8 @@
 
                             <div class="intro-feature-card summary">
                                 <span class="feature-step">03</span>
-                                <h4>필요한 후보만 요약</h4>
-                                <p>판단이 애매한 검토 대기 카드만 AI 요약합니다. 모든 기사에 비용을 쓰지 않고, 볼 만한 후보에 집중합니다.</p>
+                                <h4>새 트렌드 본문 자동 요약</h4>
+                                <p>새 기사는 원문 본문을 확보한 뒤 로컬 Gemma가 자동 요약합니다. 본문이 부족하면 억지로 만들지 않고 확보 대기로 남깁니다.</p>
                                 <div class="feature-tags">
                                     <span>AI 요약</span>
                                     <span>검토 대기 5개</span>
@@ -1141,6 +1142,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260629-trend-content-pilot"></script>
+    <script src="app.js?v=20260629-trend-content-on"></script>
 </body>
 </html>

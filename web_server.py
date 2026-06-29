@@ -48,6 +48,8 @@ app.add_middleware(
 # Global variables for background process management
 active_process = None
 active_logs: List[str] = []
+TREND_CONTENT_PIPELINE_ENABLED = os.environ.get("TWT_TREND_PIPELINE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TREND_CONTENT_PIPELINE_LIMIT = max(1, int(os.environ.get("TWT_TREND_PIPELINE_LIMIT", "10") or 10))
 scan_status = "idle"  # "idle" or "running"
 active_profile_id: Optional[int] = None
 auto_scheduler_task: Optional[asyncio.Task] = None
@@ -842,6 +844,10 @@ async def start_auto_scan_scheduler():
     global auto_scheduler_task, auto_retry_task
     if auto_scheduler_task is None or auto_scheduler_task.done():
         auto_scheduler_task = asyncio.create_task(auto_scan_scheduler())
+    active_logs.append(
+        f"[System] Trend content pipeline is {'ON' if TREND_CONTENT_PIPELINE_ENABLED else 'OFF'} "
+        f"(limit: {TREND_CONTENT_PIPELINE_LIMIT} per cycle).\n"
+    )
     # AI summaries are intentionally user-triggered so Gemini quota is not spent
     # just because many RSS/news items were collected in the background.
     active_logs.append("[System] Auto AI summary retry is disabled. Use selected/manual summary actions.\n")
@@ -946,12 +952,17 @@ async def get_status(request: Request, profile_id: Optional[int] = None):
     tail_logs = active_logs[-300:]
     auto_scan_info = get_profile_auto_scan_info(profile_id)
     selected_profile_id = auto_scan_info.get("profile_id")
+    content_pipeline = database.get_trend_content_pipeline_stats(selected_profile_id) if selected_profile_id else {}
+    content_pipeline.update({
+        "enabled": TREND_CONTENT_PIPELINE_ENABLED,
+        "limit": TREND_CONTENT_PIPELINE_LIMIT,
+    })
     return {
         "status": scan_status,
         "active_profile_id": active_profile_id,
         "is_admin": is_localhost(request),
         "auto_scan": auto_scan_info,
-        "content_pipeline": database.get_trend_content_pipeline_stats(selected_profile_id) if selected_profile_id else {},
+        "content_pipeline": content_pipeline,
         "log_line_count": len(active_logs),
         "logs": "".join(tail_logs)
     }

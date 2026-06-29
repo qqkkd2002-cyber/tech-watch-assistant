@@ -297,6 +297,7 @@ const DOM = {
     autoScanState: document.getElementById("auto-scan-state"),
     autoScanNext: document.getElementById("auto-scan-next"),
     autoScanLatest: document.getElementById("auto-scan-latest"),
+    contentPipelineState: document.getElementById("content-pipeline-state"),
     terminalOutputBody: document.getElementById("terminal-output-body"),
     clearLogsBtn: document.getElementById("clear-logs-btn"),
     
@@ -2434,6 +2435,7 @@ async function pollLogsLoop() {
             }
 
             updateAutoScanInfo(data.auto_scan);
+            updateContentPipelineWarning(data.content_pipeline);
             
             // 2. Stream logs only while the logs tab is visible. Large scans can produce
             // enough output to make other screens feel frozen if we re-render it every second.
@@ -2496,6 +2498,11 @@ function updateAutoScanInfo(info) {
 
 function updateContentPipelineWarning(info) {
     const warning = DOM.contentPipelineWarning;
+    if (DOM.contentPipelineState) {
+        DOM.contentPipelineState.textContent = info?.enabled
+            ? `본문 요약 ON · 회당 ${Number(info.limit || 0)}건 · 대기 ${Number(info.queued || 0)}건`
+            : "본문 요약 OFF";
+    }
     if (!warning) return;
     if (!info?.warning) {
         warning.hidden = true;

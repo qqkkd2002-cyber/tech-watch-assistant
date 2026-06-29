@@ -32,7 +32,7 @@ ALERT_FRESHNESS_HOURS = 168
 AUTO_AI_SUMMARY_ON_SCAN = False
 DOC_ITEMS_PER_FEED = 5
 TREND_ITEMS_PER_KEYWORD = 2
-TREND_CONTENT_PIPELINE_ENABLED = os.environ.get("TWT_TREND_PIPELINE_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+TREND_CONTENT_PIPELINE_ENABLED = os.environ.get("TWT_TREND_PIPELINE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 TREND_CONTENT_PIPELINE_LIMIT = max(1, int(os.environ.get("TWT_TREND_PIPELINE_LIMIT", "10") or 10))
 TREND_CONTENT_FAILURE_WARNING_RATE = 0.30
 TREND_NEWS_PROVIDER = os.environ.get("TWT_TREND_NEWS_PROVIDER", "google_news").strip() or "google_news"
@@ -1015,6 +1015,8 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                     print(f"[Discord] Trend alert {'sent' if sent else 'failed'}: {analysis['title']}")
                 elif webhook_url and analysis.get("analysis_status") != "complete":
                     print(f"Skipping Discord trend alert because the article is waiting for content: {article['title']}")
+                elif webhook_url and pipeline_metadata["content_status"] == "noise_filtered":
+                    print(f"Skipping Discord trend alert because obvious search noise was filtered: {article['title']}")
                 elif webhook_url:
                     print(f"Skipping Discord trend alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {article.get('date', '')}")
         print(f"-> Logged {new_count} new trend items for '{keyword}'.")
