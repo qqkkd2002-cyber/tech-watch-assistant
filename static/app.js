@@ -3079,6 +3079,9 @@ function renderInsightCandidates(data) {
     DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightSummary(btn));
     });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-expand-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightSummaryExpand(btn));
+    });
     DOM.insightCandidateBuckets.querySelectorAll(".insight-refine-btn").forEach(btn => {
         btn.addEventListener("click", () => handleInsightRefine(btn));
     });
@@ -3097,10 +3100,12 @@ function renderInsightCard(item) {
     const isSummaryPending = item.analysis_status === "pending";
     const contentPending = item.item_type === "trend" && isContentPending(item);
     const summaryText = getInsightSummaryText(item);
+    const canExpandSummary = (summaryText || "").length > 140;
     const summaryHtml = `
         <div class="insight-card-summary ${isSummaryPending ? "is-pending" : ""}">
             <div class="insight-card-summary-label">${isSummaryPending ? "수집 설명" : "AI 요약"}</div>
             <p>${escapeHtml(summaryText || "요약 내용이 아직 없습니다.")}</p>
+            ${canExpandSummary ? `<button class="insight-summary-expand-btn" type="button">더보기</button>` : ""}
         </div>
     `;
     const summaryActionHtml = isSummaryPending && !contentPending
@@ -3136,6 +3141,13 @@ function renderInsightCard(item) {
             </div>
         </article>
     `;
+}
+
+function handleInsightSummaryExpand(btn) {
+    const summary = btn.closest(".insight-card-summary");
+    if (!summary) return;
+    const isExpanded = summary.classList.toggle("is-expanded");
+    btn.textContent = isExpanded ? "접기" : "더보기";
 }
 
 function getInsightSummaryText(item) {

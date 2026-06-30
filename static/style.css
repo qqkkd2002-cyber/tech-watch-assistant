@@ -3576,6 +3576,29 @@ body {
     overflow: hidden;
 }
 
+.insight-card-summary.is-expanded p {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+}
+
+.insight-summary-expand-btn {
+    margin-top: 8px;
+    border: 1px solid rgba(34, 211, 238, 0.28);
+    background: rgba(34, 211, 238, 0.08);
+    color: #67e8f9;
+    border-radius: 999px;
+    padding: 4px 9px;
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.insight-summary-expand-btn:hover {
+    border-color: rgba(34, 211, 238, 0.5);
+    background: rgba(34, 211, 238, 0.14);
+}
+
 .insight-card-reason {
     color: var(--text-muted);
     font-size: 11px;
