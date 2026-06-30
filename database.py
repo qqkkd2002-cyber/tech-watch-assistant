@@ -711,6 +711,64 @@ def _merge_keyword_text(existing: str, keyword: str) -> str:
         values.append(keyword)
     return ",".join(values)
 
+def _split_keyword_text(text: str) -> List[str]:
+    return [value.strip() for value in (text or "").split(",") if value.strip()]
+
+def _candidate_dedupe_key(item: Dict[str, Any]) -> str:
+    item_type = item.get("item_type") or "item"
+    url = (
+        item.get("original_url")
+        or item.get("source_url")
+        or item.get("link")
+        or ""
+    ).strip()
+    if url:
+        return f"{item_type}:url:{url}"
+    return f"{item_type}:id:{item.get('item_id') or item.get('id')}"
+
+def _dedupe_candidate_items(items: List[Dict[str, Any]], limit: int) -> tuple[List[Dict[str, Any]], int]:
+    """Fold duplicate candidate cards that point to the same source item URL.
+
+    We keep the database ledger untouched. This only makes the candidate board
+    easier to review when the same article was collected under multiple search
+    keywords before URL-level trend merging was added.
+    """
+    deduped: List[Dict[str, Any]] = []
+    by_key: Dict[str, int] = {}
+    for item in items:
+        key = _candidate_dedupe_key(item)
+        keywords = []
+        keywords.extend(_split_keyword_text(item.get("matched_keywords") or ""))
+        if item.get("category"):
+            keywords.append(item["category"])
+        if key in by_key:
+            existing = deduped[by_key[key]]
+            merged = existing.get("_keyword_set") or set(_split_keyword_text(existing.get("matched_keywords") or ""))
+            for keyword in keywords:
+                if keyword:
+                    merged.add(keyword)
+            existing["_keyword_set"] = merged
+            existing["matched_keywords"] = ",".join(sorted(merged))
+            existing["dedupe_count"] = int(existing.get("dedupe_count") or 1) + 1
+            existing["duplicate_review_ids"] = (
+                (existing.get("duplicate_review_ids") or [])
+                + [item.get("id")]
+            )
+            continue
+        copied = dict(item)
+        merged = set(keyword for keyword in keywords if keyword)
+        copied["_keyword_set"] = merged
+        if merged:
+            copied["matched_keywords"] = ",".join(sorted(merged))
+        copied["dedupe_count"] = 1
+        copied["duplicate_review_ids"] = []
+        by_key[key] = len(deduped)
+        deduped.append(copied)
+    for item in deduped:
+        item.pop("_keyword_set", None)
+    folded_count = sum(max(0, int(item.get("dedupe_count") or 1) - 1) for item in deduped)
+    return deduped[:limit], folded_count
+
 def find_scanned_trend_by_url(
     profile_id: int,
     link: str = "",
@@ -2489,6 +2547,9 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     d.competitor AS source_name,
                     d.doc_type AS category,
                     d.link,
+                    '' AS original_url,
+                    '' AS source_url,
+                    d.doc_type AS matched_keywords,
                     d.summary,
                     d.published_at,
                     d.created_at AS item_created_at,
@@ -2511,6 +2572,9 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     t.source AS source_name,
                     t.keyword AS category,
                     t.link,
+                    t.original_url,
+                    t.source_url,
+                    t.matched_keywords,
                     t.summary,
                     t.published_at,
                     t.created_at AS item_created_at,
@@ -2536,7 +2600,6 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
             )
             SELECT *
             FROM ranked
-            WHERE bucket_rank <= ?
             ORDER BY
                 CASE primary_bucket
                     WHEN 'review_queue' THEN 1
@@ -2548,31 +2611,29 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                 score DESC,
                 item_created_at DESC
             """,
-            (profile_id, limit_per_bucket)
+            (profile_id,)
         )
         rows = [dict(r) for r in cursor.fetchall()]
         buckets = []
         for bucket in ["review_queue", "work_signal", "learning_signal", "noise"]:
-            items = [r for r in rows if r.get("primary_bucket") == bucket]
+            raw_items = [r for r in rows if r.get("primary_bucket") == bucket]
+            all_unique_items, folded_count = _dedupe_candidate_items(raw_items, len(raw_items) or limit_per_bucket)
+            items = all_unique_items[:limit_per_bucket]
             buckets.append({
                 "bucket": bucket,
                 "label": BUCKET_LABELS[bucket],
                 "count": len(items),
                 "items": items,
+                "total": len(all_unique_items),
+                "raw_total": len(raw_items),
+                "deduped_count": folded_count,
             })
-        cursor.execute(
-            """
-            SELECT primary_bucket, COUNT(*) AS total
-            FROM ai_editor_reviews
-            WHERE profile_id = ? AND is_active = 1
-            GROUP BY primary_bucket
-            """,
-            (profile_id,)
-        )
-        totals = {r["primary_bucket"]: r["total"] for r in cursor.fetchall()}
-        for bucket in buckets:
-            bucket["total"] = totals.get(bucket["bucket"], 0)
-        return {"buckets": buckets, "total_active_reviews": sum(totals.values())}
+        return {
+            "buckets": buckets,
+            "total_active_reviews": sum(bucket["raw_total"] for bucket in buckets),
+            "total_unique_reviews": sum(bucket["total"] for bucket in buckets),
+            "total_deduped_reviews": sum(bucket["deduped_count"] for bucket in buckets),
+        }
     finally:
         conn.close()
 

@@ -3043,11 +3043,12 @@ function renderInsightCandidates(data) {
     };
     const pendingTotal = reviewQueue.total || 0;
     const visibleCount = (reviewQueue.items || []).length;
+    const foldedCount = reviewQueue.deduped_count || 0;
     const noiseTotal = noiseBucket.total || 0;
 
     if (DOM.insightCandidateStatus) {
         DOM.insightCandidateStatus.textContent = pendingTotal
-            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.`
+            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.${foldedCount ? ` 같은 원문 ${foldedCount}개는 접었습니다.` : ""}`
             : "처리할 검토 대기 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 새로 올리세요.";
     }
 
@@ -3094,8 +3095,10 @@ function renderInsightCard(item) {
         ? `발행 ${formatDate(item.published_at)}`
         : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
     const tags = parseInsightTags(item.suggested_tags || item.secondary_buckets);
-    const tagHtml = tags.length
-        ? `<div class="insight-card-tags">${tags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
+    const keywordTags = parseInsightTags(item.matched_keywords || "").filter(tag => !tags.includes(tag));
+    const allTags = tags.concat(keywordTags).slice(0, 8);
+    const tagHtml = allTags.length
+        ? `<div class="insight-card-tags">${allTags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
         : "";
     const isSummaryPending = item.analysis_status === "pending";
     const contentPending = item.item_type === "trend" && isContentPending(item);
@@ -3125,6 +3128,7 @@ function renderInsightCard(item) {
                 <span>${escapeHtml(dateText)}</span>
                 <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
                 <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
+                ${Number(item.dedupe_count || 1) > 1 ? `<span>같은 원문 ${Number(item.dedupe_count)}건 접음</span>` : ""}
             </div>
             <div class="insight-card-score">
                 <span>점수 ${Number(item.score || 0)}</span>
