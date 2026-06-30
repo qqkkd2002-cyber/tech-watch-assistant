@@ -901,18 +901,20 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                     continue
 
                 noise_match = trend_pipeline.detect_obvious_search_noise(article)
-                if noise_match:
+                keyword_mismatch = trend_pipeline.detect_keyword_mismatch_noise(article, keyword)
+                if noise_match or keyword_mismatch:
+                    filter_reason = f"title_term:{noise_match}" if noise_match else f"keyword_mismatch:{keyword_mismatch}"
                     analysis = {
                         "title": article.get("title", "제목 확인 필요"),
-                        "summary": article.get("description", "") or "명백한 검색 노이즈로 요약을 생략했습니다.",
+                        "summary": article.get("description", "") or "검색 키워드와 제목/설명이 맞지 않아 요약을 생략했습니다.",
                         "source": article.get("source", "") or "검색 노이즈",
                         "analysis_status": "complete",
                         "analysis_error": "",
                     }
                     pipeline_metadata["content_status"] = "noise_filtered"
-                    pipeline_metadata["content_error"] = f"title_term:{noise_match}"
+                    pipeline_metadata["content_error"] = filter_reason
                     content_pipeline_counts["noise_filtered"] += 1
-                    print(f"[Trend Content] Obvious noise skipped before summary ({noise_match}): {article['title']}")
+                    print(f"[Trend Content] Search noise skipped before summary ({filter_reason}): {article['title']}")
                 elif content_pipeline_counts["attempted"] < TREND_CONTENT_PIPELINE_LIMIT:
                     content_pipeline_counts["attempted"] += 1
                     outcome = process_trend_article_content(profile_id, article, keyword)

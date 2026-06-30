@@ -28,6 +28,12 @@ OBVIOUS_NOISE_TITLE_TERMS = (
     "여행",
 )
 
+KEYWORD_TOKEN_STOPWORDS = {
+    "news",
+    "뉴스",
+    "보도자료",
+}
+
 
 class TrendPipelineError(RuntimeError):
     def __init__(self, stage: str, message: str):
@@ -42,6 +48,32 @@ def detect_obvious_search_noise(article: Dict[str, Any]) -> str:
         if term.lower() in title:
             return term
     return ""
+
+
+def keyword_tokens(keyword: str) -> List[str]:
+    """Return meaningful search-keyword tokens for title/description sanity checks."""
+    tokens = re.findall(r"[0-9A-Za-z가-힣]+", (keyword or "").lower())
+    return [
+        token
+        for token in tokens
+        if len(token) >= 2 and token not in KEYWORD_TOKEN_STOPWORDS
+    ]
+
+
+def detect_keyword_mismatch_noise(article: Dict[str, Any], keyword: str) -> str:
+    """Detect search results whose title/description do not mention the keyword at all."""
+    tokens = keyword_tokens(keyword)
+    if not tokens:
+        return ""
+    haystack = _normalize_text(
+        " ".join(
+            str(article.get(field, ""))
+            for field in ("title", "description")
+        )
+    ).lower()
+    if any(token in haystack for token in tokens):
+        return ""
+    return keyword
 
 
 def _ssl_context() -> ssl.SSLContext:

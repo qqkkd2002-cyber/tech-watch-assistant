@@ -138,6 +138,38 @@ class TrendPipelineQueueTest(unittest.TestCase):
             "",
         )
 
+    def test_keyword_mismatch_noise_is_filtered_before_summary(self):
+        self.assertEqual(
+            trend_pipeline.detect_keyword_mismatch_noise(
+                {
+                    "title": "노주현, 서울 마곡 초호화 실버타운에 세컨드하우스 보유",
+                    "description": "배우의 실버타운 생활을 소개한 기사",
+                },
+                "AI 거버넌스",
+            ),
+            "AI 거버넌스",
+        )
+        self.assertEqual(
+            trend_pipeline.detect_keyword_mismatch_noise(
+                {
+                    "title": "현대차, 지속가능성 보고서 발간…AI 거버넌스 성과 담았다",
+                    "description": "RE100과 AI 거버넌스 구축 계획을 소개했다.",
+                },
+                "AI 거버넌스",
+            ),
+            "",
+        )
+        self.assertEqual(
+            trend_pipeline.detect_keyword_mismatch_noise(
+                {
+                    "title": "양자컴퓨팅이 금융산업의 경쟁력으로 부상",
+                    "description": "규제 샌드박스와 투자 로드맵 필요성이 논의됐다.",
+                },
+                "금융 샌드박스",
+            ),
+            "",
+        )
+
     def test_queued_items_do_not_inflate_failure_warning(self):
         stats = database.get_trend_content_pipeline_stats(1)
         self.assertEqual(stats["queued"], 3)
