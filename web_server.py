@@ -9,7 +9,7 @@ import urllib.request
 import urllib.parse
 from html import unescape
 from html.parser import HTMLParser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
@@ -250,7 +250,12 @@ def parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace(" ", "T"))
+        parsed = datetime.fromisoformat(value.replace(" ", "T"))
+        if parsed.tzinfo is None:
+            # SQLite CURRENT_TIMESTAMP is UTC. Convert it to a naive local
+            # datetime because the scheduler uses datetime.now().
+            parsed = parsed.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+        return parsed
     except Exception:
         return None
 
