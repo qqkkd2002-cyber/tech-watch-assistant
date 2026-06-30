@@ -1,5 +1,7 @@
 # TWT v2 - AI Editorial Intelligence
 
+Related context: see `docs/TWT_PROJECT_DECISION_LOG.md` for the Korean decision log covering why the project moved to Ollama/Gemma, how the trend-content pipeline was stabilized, and what remains intentionally deferred.
+
 ## One-Line Concept
 
 Tech Watch Tracker v2 is not a mode.
