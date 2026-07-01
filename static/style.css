@@ -3599,6 +3599,42 @@ body {
     background: rgba(34, 211, 238, 0.14);
 }
 
+.insight-event-group {
+    margin: 8px 0 10px;
+    border: 1px solid rgba(168, 85, 247, 0.22);
+    border-radius: 8px;
+    background: rgba(168, 85, 247, 0.06);
+    padding: 7px 9px;
+}
+
+.insight-event-group summary {
+    color: #d8b4fe;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.insight-event-group ul {
+    margin: 8px 0 0;
+    padding-left: 18px;
+}
+
+.insight-event-group li {
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.5;
+    margin-top: 5px;
+}
+
+.insight-event-group a {
+    color: #c4b5fd;
+    display: block;
+}
+
+.insight-event-group li span {
+    color: var(--text-help);
+}
+
 .insight-card-reason {
     color: var(--text-muted);
     font-size: 11px;

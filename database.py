@@ -198,6 +198,12 @@ def init_db():
         cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN suggested_tags TEXT DEFAULT ''")
     if 'classification_source' not in ai_review_cols:
         cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN classification_source TEXT DEFAULT 'rule_based'")
+    if 'event_group_key' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_key TEXT DEFAULT ''")
+    if 'event_group_score' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_score REAL DEFAULT 0")
+    if 'event_group_reason' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_reason TEXT DEFAULT ''")
     cursor.execute("""
         UPDATE ai_editor_reviews
         SET suggested_tags = CASE primary_bucket
@@ -766,8 +772,57 @@ def _dedupe_candidate_items(items: List[Dict[str, Any]], limit: int) -> tuple[Li
         deduped.append(copied)
     for item in deduped:
         item.pop("_keyword_set", None)
-    folded_count = sum(max(0, int(item.get("dedupe_count") or 1) - 1) for item in deduped)
-    return deduped[:limit], folded_count
+    url_folded_count = sum(max(0, int(item.get("dedupe_count") or 1) - 1) for item in deduped)
+
+    # A second, deliberately conservative fold groups different URLs only when
+    # the offline summary comparison has been confirmed as the same event.
+    # Source rows and AI reviews remain untouched and every member is returned
+    # inside event_group_items so the UI can expand the bundle.
+    event_folded: List[Dict[str, Any]] = []
+    event_positions: Dict[str, int] = {}
+    event_folded_count = 0
+    for item in deduped:
+        event_key = (item.get("event_group_key") or "").strip()
+        if not event_key:
+            copied = dict(item)
+            copied["event_group_count"] = 1
+            copied["event_group_items"] = []
+            event_folded.append(copied)
+            continue
+
+        member = {
+            "id": item.get("id"),
+            "item_id": item.get("item_id"),
+            "title": item.get("title", ""),
+            "link": item.get("link", ""),
+            "source_name": item.get("source_name", ""),
+            "published_at": item.get("published_at", ""),
+            "summary": item.get("summary", ""),
+        }
+        if event_key not in event_positions:
+            copied = dict(item)
+            copied["event_group_count"] = 1
+            copied["event_group_items"] = [member]
+            event_positions[event_key] = len(event_folded)
+            event_folded.append(copied)
+            continue
+
+        position = event_positions[event_key]
+        existing = event_folded[position]
+        existing["event_group_count"] = int(existing.get("event_group_count") or 1) + 1
+        existing["event_group_items"].append(member)
+        event_folded_count += 1
+
+        # Prefer the item with the richest summary as the visible representative.
+        if len(item.get("summary") or "") > len(existing.get("summary") or ""):
+            preserved_members = existing["event_group_items"]
+            preserved_count = existing["event_group_count"]
+            replacement = dict(item)
+            replacement["event_group_items"] = preserved_members
+            replacement["event_group_count"] = preserved_count
+            event_folded[position] = replacement
+
+    return event_folded[:limit], url_folded_count + event_folded_count
 
 def find_scanned_trend_by_url(
     profile_id: int,
@@ -2384,6 +2439,7 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                  AND ar.item_id = d.id
                  AND ar.is_active = 1
                 WHERE d.profile_id = ?
+                  AND COALESCE(d.manual_saved, 0) = 0
                   AND COALESCE(ar.classification_source, '') != 'llm'
                   AND NOT EXISTS (
                       SELECT 1 FROM editor_judgments j
@@ -2418,6 +2474,7 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                  AND ar.item_id = t.id
                  AND ar.is_active = 1
                 WHERE t.profile_id = ?
+                  AND COALESCE(t.manual_saved, 0) = 0
                   AND COALESCE(ar.classification_source, '') != 'llm'
                   AND NOT EXISTS (
                       SELECT 1 FROM editor_judgments j
@@ -2618,6 +2675,11 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
         for bucket in ["review_queue", "work_signal", "learning_signal", "noise"]:
             raw_items = [r for r in rows if r.get("primary_bucket") == bucket]
             all_unique_items, folded_count = _dedupe_candidate_items(raw_items, len(raw_items) or limit_per_bucket)
+            event_grouped_count = sum(
+                max(0, int(item.get("event_group_count") or 1) - 1)
+                for item in all_unique_items
+            )
+            url_deduped_count = max(0, folded_count - event_grouped_count)
             items = all_unique_items[:limit_per_bucket]
             buckets.append({
                 "bucket": bucket,
@@ -2627,6 +2689,8 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                 "total": len(all_unique_items),
                 "raw_total": len(raw_items),
                 "deduped_count": folded_count,
+                "url_deduped_count": url_deduped_count,
+                "event_grouped_count": event_grouped_count,
             })
         return {
             "buckets": buckets,

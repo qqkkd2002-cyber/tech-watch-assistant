@@ -3043,12 +3043,13 @@ function renderInsightCandidates(data) {
     };
     const pendingTotal = reviewQueue.total || 0;
     const visibleCount = (reviewQueue.items || []).length;
-    const foldedCount = reviewQueue.deduped_count || 0;
+    const urlFoldedCount = reviewQueue.url_deduped_count || 0;
+    const eventFoldedCount = reviewQueue.event_grouped_count || 0;
     const noiseTotal = noiseBucket.total || 0;
 
     if (DOM.insightCandidateStatus) {
         DOM.insightCandidateStatus.textContent = pendingTotal
-            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.${foldedCount ? ` 같은 원문 ${foldedCount}개는 접었습니다.` : ""}`
+            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.${urlFoldedCount ? ` 같은 원문 ${urlFoldedCount}개는 접었습니다.` : ""}${eventFoldedCount ? ` 같은 사건 반복 카드 ${eventFoldedCount}개도 묶었습니다.` : ""}`
             : "처리할 검토 대기 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 새로 올리세요.";
     }
 
@@ -3129,12 +3130,14 @@ function renderInsightCard(item) {
                 <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
                 <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
                 ${Number(item.dedupe_count || 1) > 1 ? `<span>같은 원문 ${Number(item.dedupe_count)}건 접음</span>` : ""}
+                ${Number(item.event_group_count || 1) > 1 ? `<span>같은 사건 ${Number(item.event_group_count)}건 묶음</span>` : ""}
             </div>
             <div class="insight-card-score">
                 <span>점수 ${Number(item.score || 0)}</span>
                 <span>확신도 ${Number(item.confidence || 0)}</span>
             </div>
             ${summaryHtml}
+            ${renderInsightEventGroup(item)}
             <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
             <div class="insight-card-actions">
                 ${summaryActionHtml}
@@ -3144,6 +3147,27 @@ function renderInsightCard(item) {
                 <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
             </div>
         </article>
+    `;
+}
+
+function renderInsightEventGroup(item) {
+    const members = Array.isArray(item.event_group_items) ? item.event_group_items : [];
+    if (Number(item.event_group_count || 1) <= 1 || members.length <= 1) return "";
+    const representativeId = Number(item.item_id || 0);
+    const links = members
+        .filter(member => Number(member.item_id || 0) !== representativeId)
+        .map(member => `
+            <li>
+                <a href="${escapeHtml(member.link || "#")}" target="_blank">${escapeHtml(member.title || "제목 없음")}</a>
+                <span>${escapeHtml(member.source_name || "-")}</span>
+            </li>
+        `).join("");
+    if (!links) return "";
+    return `
+        <details class="insight-event-group">
+            <summary>같은 사건 기사 ${Number(item.event_group_count)}건 펼쳐보기</summary>
+            <ul>${links}</ul>
+        </details>
     `;
 }
 
