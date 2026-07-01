@@ -2170,6 +2170,152 @@ def move_ai_editor_review(profile_id: int, ai_review_id: int, target_bucket: str
     finally:
         conn.close()
 
+def move_ai_editor_review_group(
+    profile_id: int,
+    ai_review_id: int,
+    target_bucket: str,
+    note: str = "",
+) -> Dict[str, Any]:
+    """Apply one editorial click to every still-unjudged member of an event group.
+
+    Each source item keeps its own ai_editor_review and editor_judgment row for
+    later traceability. Existing user judgments and manually saved group members
+    are deliberately skipped rather than overwritten.
+    """
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    label = {
+        "review_queue": "later",
+        "work_signal": "work_signal",
+        "learning_signal": "learning_signal",
+        "noise": "noise",
+    }[target_bucket]
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT * FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id),
+        )
+        representative = cursor.fetchone()
+        if not representative:
+            raise ValueError("Active AI review not found.")
+
+        event_key = (representative["event_group_key"] or "").strip()
+        if event_key:
+            cursor.execute(
+                """
+                SELECT ar.*,
+                       COALESCE(d.manual_saved, t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                LEFT JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                WHERE ar.profile_id = ? AND ar.is_active = 1
+                  AND ar.event_group_key = ?
+                  AND ar.primary_bucket = ?
+                ORDER BY ar.id
+                """,
+                (profile_id, event_key, representative["primary_bucket"]),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT ar.*,
+                       COALESCE(d.manual_saved, t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                LEFT JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+                """,
+                (ai_review_id, profile_id),
+            )
+        candidates = cursor.fetchall()
+
+        moved_reviews = []
+        judgments = []
+        skipped = []
+        is_group_move = bool(event_key and len(candidates) > 1)
+        for review in candidates:
+            if is_group_move and int(review["manual_saved"] or 0) == 1:
+                skipped.append({"ai_review_id": review["id"], "reason": "manual_saved"})
+                continue
+            cursor.execute(
+                """
+                SELECT 1 FROM editor_judgments
+                WHERE profile_id = ? AND item_type = ? AND item_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                LIMIT 1
+                """,
+                (profile_id, review["item_type"], review["item_id"]),
+            )
+            if is_group_move and cursor.fetchone():
+                skipped.append({"ai_review_id": review["id"], "reason": "existing_user_judgment"})
+                continue
+
+            old_bucket = review["primary_bucket"]
+            move_note = note or (
+                f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 "
+                f"{BUCKET_LABELS.get(target_bucket, target_bucket)}로 이동"
+            )
+            if is_group_move:
+                move_note = f"[같은 사건 묶음 일괄 판단] {move_note}"
+            reason = review["reason"] or ""
+            if old_bucket != target_bucket:
+                reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+            cursor.execute(
+                """
+                UPDATE ai_editor_reviews
+                SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND profile_id = ? AND is_active = 1
+                """,
+                (target_bucket, reason, review["id"], profile_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO editor_judgments (profile_id, ai_review_id, item_type, item_id, label, note)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id, item_type, item_id, label)
+                DO UPDATE SET ai_review_id = excluded.ai_review_id,
+                              note = excluded.note,
+                              updated_at = CURRENT_TIMESTAMP
+                """,
+                (profile_id, review["id"], review["item_type"], review["item_id"], label, move_note),
+            )
+            judgment_id = cursor.lastrowid
+            archive_saved = 1 if target_bucket in ("work_signal", "learning_signal") else int(review["manual_saved"] or 0)
+            table_name = "scanned_docs" if review["item_type"] == "doc" else "scanned_trends"
+            cursor.execute(f"UPDATE {table_name} SET is_starred = ? WHERE id = ?", (archive_saved, review["item_id"]))
+            moved_reviews.append(dict(review))
+            judgments.append({
+                "id": judgment_id,
+                "ai_review_id": review["id"],
+                "item_type": review["item_type"],
+                "item_id": review["item_id"],
+                "label": label,
+            })
+
+        if not moved_reviews:
+            raise ValueError("묶음에서 새로 적용할 수 있는 미판정 항목이 없습니다.")
+        conn.commit()
+        return {
+            "review": {**dict(representative), "primary_bucket": target_bucket},
+            "reviews": moved_reviews,
+            "judgments": judgments,
+            "applied_count": len(moved_reviews),
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+            "event_group_key": event_key,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 def has_user_editor_judgment(profile_id: int, item_type: str, item_id: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()

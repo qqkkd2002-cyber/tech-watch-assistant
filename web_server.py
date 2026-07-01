@@ -1471,30 +1471,15 @@ async def api_generate_editor_reviews(payload: EditorReviewGeneratePayload):
 async def api_move_editor_review(payload: EditorReviewMovePayload):
     """Moves an active AI candidate card to a different editorial bucket."""
     try:
-        moved = database.move_ai_editor_review(
+        result = database.move_ai_editor_review_group(
             profile_id=payload.profile_id,
             ai_review_id=payload.ai_review_id,
             target_bucket=payload.target_bucket,
             note=payload.note
         )
-        label = {
-            "review_queue": "later",
-            "work_signal": "work_signal",
-            "learning_signal": "learning_signal",
-            "noise": "noise"
-        }.get(payload.target_bucket, "important")
-        judgment = database.save_editor_judgment(
-            profile_id=payload.profile_id,
-            ai_review_id=payload.ai_review_id,
-            item_type=moved["item_type"],
-            item_id=moved["item_id"],
-            label=label,
-            note=payload.note or "드래그로 후보 카테고리 수정"
-        )
-        database.sync_starred_with_editor_label(moved["item_type"], moved["item_id"], label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"success": True, "review": moved, "judgment": judgment}
+    return {"success": True, **result}
 
 @app.post("/api/editor/reviews/refine")
 async def api_refine_editor_review(payload: EditorReviewRefinePayload):

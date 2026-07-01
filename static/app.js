@@ -3464,8 +3464,13 @@ async function handleInsightCardMove(aiReviewId, targetBucket, currentBucket) {
             const err = await res.json();
             throw new Error(err.detail || "카테고리 이동 저장 실패");
         }
+        const data = await res.json();
         await loadInsightCandidates();
-        return true;
+        if (DOM.insightCandidateStatus && Number(data.applied_count || 0) > 1) {
+            const skippedText = Number(data.skipped_count || 0) > 0 ? ` · 기존 판단 ${Number(data.skipped_count)}건 보존` : "";
+            DOM.insightCandidateStatus.textContent = `같은 사건 ${Number(data.applied_count)}건에 한 번에 적용했습니다${skippedText}.`;
+        }
+        return data;
     } catch (e) {
         if (DOM.insightCandidateStatus) {
             DOM.insightCandidateStatus.textContent = `카테고리 이동 실패: ${e.message}`;
