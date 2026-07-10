@@ -787,7 +787,7 @@
                 <header class="content-header">
                     <div class="header-titles">
                         <h2>사용 가이드</h2>
-                        <p class="subtitle">자동 수집으로 자료가 쌓이고, AI 후보 정리와 요약을 거쳐 사람이 업무 신호와 학습 신호를 확정하는 전체 흐름을 안내합니다.</p>
+                        <p class="subtitle">자동 수집으로 자료가 쌓이고, 로컬 Gemma 요약과 미확인 분류 초안을 거쳐 사람이 업무 신호와 학습 신호를 확정하는 전체 흐름을 안내합니다.</p>
                     </div>
                 </header>
 
@@ -878,7 +878,7 @@
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Auto</span><h3>주기별 자동 수집</h3></div>
                                     <div class="guide-panel-body">
-                                        <p><strong>주기별 자동 수집</strong>을 켜두면 서버가 실행 중일 때 설정한 주기마다 RSS, 경쟁사 문서, 키워드 뉴스를 확인합니다. 자동 수집은 자료를 쌓는 단계이고, AI 요약이나 신호 확정과는 별개의 기능입니다.</p>
+                                        <p><strong>주기별 자동 수집</strong>을 켜두면 서버가 실행 중일 때 설정한 주기마다 RSS, 경쟁사 문서, 키워드 뉴스를 확인합니다. 새 트렌드는 설정된 범위 안에서 원문 확보와 Gemma 요약까지 이어지고, 신호 확정은 사용자가 후보 정리에서 진행합니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -896,7 +896,7 @@
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Next</span><h3>수집 후에는 후보 정리로 이동</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>수집이 끝났다고 바로 모든 기사를 읽을 필요는 없습니다. 다음 단계에서 <strong>후보 정리</strong>로 이동해 새로 올라온 검토 대기 항목만 처리합니다.</p>
+                                        <p>수집이 끝났다고 바로 모든 기사를 읽을 필요는 없습니다. 다음 단계에서 <strong>후보 정리</strong>로 이동해 새 후보와 Gemma 미확인 초안만 처리합니다.</p>
                                     </div>
                                 </div>
                             </div>
@@ -908,15 +908,21 @@
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">AI 후보</span><h3>새 검토 대기만 처리하기</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">AI 후보</span><h3>새 후보와 미확인 초안 처리하기</h3></div>
                                     <div class="guide-panel-body">
-                                        <p><strong>후보 정리</strong>의 <strong>AI 후보 정리</strong>를 누르면 최근 수집 항목 중 처리할 만한 카드가 <strong>검토 대기</strong>에 올라옵니다. 사용자가 업무 신호, 학습 신호, 노이즈로 확정하면 이 작업대에서는 사라집니다.</p>
+                                        <p><strong>후보 정리</strong>의 <strong>AI 후보 정리</strong>를 누르면 최근 수집 항목 중 처리할 만한 카드가 올라옵니다. 규칙 기반 후보는 검토 대기에서 시작하고, Gemma 정밀 분류를 거친 항목은 <strong>Gemma 자동 분류 · 미확인</strong> 영역에서 업무 신호, 학습 신호, 노이즈, 판단 보류 초안으로 나뉘어 보입니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Summary</span><h3>검토 대기 후보만 요약</h3></div>
                                     <div class="guide-panel-body">
                                         <p>판단이 애매하면 <strong>검토 대기 5개 요약</strong>을 눌러 상위 후보 몇 개만 AI 요약합니다. 개별 카드의 <strong>AI 요약 생성</strong> 버튼으로 한 건씩 요약할 수도 있습니다.</p>
+                                    </div>
+                                </div>
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Gemma</span><h3>미확인 초안 검수</h3></div>
+                                    <div class="guide-panel-body">
+                                        <p><strong>Gemma 자동 분류 · 미확인</strong>은 확정 결과가 아니라 AI 초안입니다. 같은 버킷 버튼을 누르면 확정되고, 다른 버킷 버튼을 누르면 업무 신호·학습 신호·노이즈 중 맞는 쪽으로 교정됩니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -936,7 +942,13 @@
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Editor</span><h3>업무 신호, 학습 신호, 노이즈로 판단</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>담당 제품·제안·경쟁사 분석에 바로 연결되면 <strong>업무 신호</strong>, 직접 업무와 멀어도 기술 감각을 키우면 <strong>학습 신호</strong>, 관련성이 낮으면 <strong>노이즈</strong>로 보냅니다. 처리된 카드는 후보 정리 화면에서 빠지고, 결과는 대시보드와 수집 원장에 남습니다.</p>
+                                        <p>담당 제품·제안·경쟁사 분석에 바로 연결되면 <strong>업무 신호</strong>, 직접 업무와 멀어도 기술 감각을 키우면 <strong>학습 신호</strong>, 관련성이 낮으면 <strong>노이즈</strong>로 보냅니다. AI 초안은 확정이 아니며, 사용자가 누른 판단만 최종 기록으로 남습니다.</p>
+                                    </div>
+                                </div>
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Rule</span><h3>TROMBONE 기준으로 보기</h3></div>
+                                    <div class="guide-panel-body">
+                                        <p>일반 AI 동향은 보통 학습 신호입니다. AI가 코드 생성, 개발자 워크플로우, CI/CD, 배포 자동화, 보안 집행, 변경 통제와 직접 연결될 때 업무 신호로 봅니다. GitHub 같은 개발도구 소식도 사소한 UI·권한·버전·과금 변경이면 업무 신호로 확정하지 않습니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -968,7 +980,7 @@
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">AI</span><h3>AI는 초안, 사람은 최종 판단</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>AI 후보 정리는 완성된 결론이 아니라 편집 초안입니다. 사용자가 업무 신호/학습 신호/노이즈로 고치는 과정이 쌓이면 다음 분류와 보고서 개선에 활용할 수 있습니다.</p>
+                                        <p>AI 후보 정리와 Gemma 자동 분류는 완성된 결론이 아니라 편집 초안입니다. 사용자가 업무 신호/학습 신호/노이즈로 확정하거나 교정한 기록만 최종 판단으로 남고, 다음 분류와 보고서 개선에 활용됩니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -994,7 +1006,7 @@
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Key</span><h3>Gemini API Key</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>AI 요약, 키워드 추천, 피드 추천, 보고서 생성에 사용됩니다. 실제 키는 GitHub에 올리지 않고, 예시 파일에는 형식만 남깁니다.</p>
+                                        <p>기본 요약과 정밀 분류는 로컬 Ollama/Gemma를 우선 사용하고, Gemini API Key는 키워드 추천, 피드 추천, 보고서 생성, 백업 AI 경로에 사용됩니다. 실제 키는 GitHub에 올리지 않고, 예시 파일에는 형식만 남깁니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
