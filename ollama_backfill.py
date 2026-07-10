@@ -13,6 +13,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Safely backfill editor classifications with local Gemma.")
     parser.add_argument("--profile-id", type=int, default=1)
     parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--bucket", choices=["", "review_queue", "work_signal", "learning_signal", "noise"], default="")
+    parser.add_argument("--item-type", choices=["", "doc", "trend"], default="")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -21,15 +23,27 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.execute:
-        result = run_ollama_backfill(args.profile_id, args.limit)
+        result = run_ollama_backfill(
+            args.profile_id,
+            args.limit,
+            primary_bucket=args.bucket,
+            item_type=args.item_type,
+        )
     else:
-        preview = get_ollama_backfill_preview(args.profile_id, limit=2000)
+        preview = get_ollama_backfill_preview(
+            args.profile_id,
+            limit=2000,
+            primary_bucket=args.bucket,
+            item_type=args.item_type,
+        )
         result = {
             "executed": False,
             "message": "Preview only. No editor-review data was changed.",
             "ollama": get_ollama_status(),
             "profile_id": args.profile_id,
             "model": preview["model"],
+            "primary_bucket": preview["primary_bucket"],
+            "item_type": preview["item_type"],
             "candidate_count": preview["candidate_count"],
             "eligible_count": preview["eligible_count"],
             "insufficient_count": preview["insufficient_count"],

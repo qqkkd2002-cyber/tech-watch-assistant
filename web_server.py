@@ -26,6 +26,7 @@ except ImportError:
     sys.exit(1)
 
 import database
+import trend_pipeline
 database.init_db()
 
 try:
@@ -145,6 +146,8 @@ class FeedSuggestionRequest(BaseModel):
 
 def extract_json_object(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("AI가 빈 응답을 반환했습니다. 잠시 후 다시 시도하세요.")
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
@@ -324,6 +327,22 @@ Respond ONLY as valid JSON with this schema:
         "source": str(result.get("source", "")).strip() or "News"
     }
 
+
+def summarize_trend_item_with_ollama(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Use the same evidence-preserving local pipeline as automatic trend collection."""
+    source_url = item.get("source_url") or item.get("link") or ""
+    if not source_url:
+        raise trend_pipeline.TrendPipelineError("resolve", "원문 URL이 없어 요약할 수 없습니다.")
+    return trend_pipeline.enrich_and_summarize_trend(
+        {
+            "title": item.get("title", ""),
+            "link": source_url,
+            "source": item.get("source", "") or "News",
+        },
+        item.get("keyword", ""),
+        model=EDITOR_OLLAMA_MODEL,
+    )
+
 def build_editor_profile_context(profile_id: int) -> str:
     profile = database.get_profile_by_id(profile_id) or {}
     keywords = database.get_profile_keywords(profile_id)
@@ -428,6 +447,16 @@ Product identity:
 Current user's monitoring context:
 {profile_context or "- No profile context available"}
 
+TROMBONE product lens (highest-priority relevance rule):
+- TROMBONE is not an AI product. It is a platform that standardizes software development, delivery, and operations while governing and auditing change.
+- Pure AI news (new foundation models, generic generative-AI adoption, or another company's AI use) is normally learning_signal, not work_signal.
+- AI becomes work_signal when it changes the software lifecycle or helps govern it: AI coding, code-generation controls, developer workflows, CI/CD, deployment automation, DevSecOps, platform engineering, SRE/AIOps, release/change governance, traceability, audit, or runtime policy.
+- DevOps, CI/CD, software-supply-chain security, deployment/change management, regulated delivery, and competing developer-platform products are work_signal when supported by concrete facts.
+- Developer-tool updates are not work_signal merely because they mention GitHub, Copilot, GitLab, or another tool. Treat minor UI/convenience features, repository/issue settings, simple desktop-app version updates, and billing/credit/policy changes as learning_signal or noise unless they materially change development, deployment, operations, governance, audit, or workflow control.
+- Keep developer-tool updates as work_signal when they affect CI/CD runners, deployment pipelines, release/change gates, security scanning enforcement, developer workflow automation, or AI agents integrated into the software lifecycle.
+- Financial-sector regulation combined with deployment controls, change governance, auditability, software supply chain, or secure developer workflows is a strong work_signal.
+- Finance combined only with generic AI adoption, talent training, events, or broad awareness is learning_signal or noise, not work_signal.
+
 Item:
 Type: {item.get('item_type', '')}
 Title: {item.get('title', '')}
@@ -466,6 +495,15 @@ User-specific editorial standard:
 - Monitoring keywords, category labels, and bracketed prefixes in the title are collection metadata. They are not evidence that the article itself is relevant. Judge the actual article content and ignore a misleading keyword match.
 - Do not use vague phrases such as "useful for understanding a broad trend" or "related to the user's keywords" as the sole reason for learning_signal. A signal reason must name at least one concrete reusable mechanism, fact, product change, adoption case, regulatory change, or operating method from the item.
 - If no such concrete detail can be named, use noise for generic event/announcement content. Use review_queue with confidence 65 or lower only when the item appears potentially important but the supplied title and summary are genuinely insufficient to decide.
+- Confidence is not a style choice. Use 90 or higher only when the supplied text directly proves a concrete product change, technical mechanism, regulatory requirement, measured adoption result, or reusable operating method. Generic relevance or keyword overlap must not receive high confidence as a positive signal.
+
+Strict negative calibration examples (normally noise, not learning_signal):
+- AI/IT job training, trainee recruitment, teacher-use surveys, seminars, forums, hackathons, awards, or talent programs without a reusable technical mechanism.
+- A museum partnership mentioning digitization, a real-estate project marketed as a "business platform", or an energy/SMR project collected under a software keyword.
+- A company named Sempra abbreviated as SRE when the article is not about site reliability engineering.
+- Mortgage-fee waivers, mobile-gift-card refunds, or general customer-benefit notices without an IT product, technical mechanism, regulation change, or reusable market mechanism.
+- Broad opinion pieces about imagination, talent, or mindset unless they contain a concrete method, measured result, or operating framework.
+- GitHub/GitLab/Copilot minor product updates such as saved issue views, issue permission toggles, desktop-app point releases, row-height changes, model availability for free/student plans, or AI credit/billing pools when they do not change CI/CD, deployment, operations, security enforcement, auditability, or lifecycle workflow.
 
 Calibration examples:
 1. Generic financial-sector AI talent training or recruitment news without concrete technology or policy implications -> noise.
@@ -536,7 +574,7 @@ def normalize_editor_classification_result(
     if not reason:
         reason = "이 항목의 재사용 가치 판단을 위해 정밀 분류를 실행했지만, 구체 이유가 비어 있어 검토 대기로 남겼습니다."
 
-    return {
+    normalized = {
         "primary_bucket": bucket,
         "score": min(clamp_score(result.get("score"), 55), 55) if forced_review_reason else clamp_score(result.get("score"), 55),
         "confidence": min(clamp_score(result.get("confidence"), 60), 65) if forced_review_reason else clamp_score(result.get("confidence"), 60),
@@ -553,8 +591,179 @@ def normalize_editor_classification_result(
         "related_theme": str(result.get("related_theme", "")).strip() or item.get("category") or item.get("source_name") or "전략 신호",
         "classification_source": "llm",
         "model_name": model_name,
-        "prompt_version": "reuse-value-profile-v3",
+        "prompt_version": "reuse-value-profile-v5-trombone",
     }
+    return apply_editor_reuse_guard(normalized, item)
+
+
+def apply_editor_reuse_guard(review: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    """Code-level backstop against confident keyword-driven over-promotion."""
+    guarded = dict(review)
+    bucket = guarded.get("primary_bucket") or "review_queue"
+    title = re.sub(r"^\s*\[[^\]]{1,40}\]\s*", "", str(item.get("title") or "")).lower()
+    evidence_quality = assess_editor_evidence(item)
+    summary = evidence_quality["cleaned_summary"].lower()
+    haystack = f"{title} {summary}"
+    evidence_points = [str(point).strip() for point in guarded.get("evidence_points", []) if str(point).strip()]
+
+    obvious_noise_patterns = (
+        "교육생 모집", "직무교육", "교원", "설문", "세미나", "해커톤", "인재 양성",
+        "박물관", "테라타워", "지식산업센터", "주담대", "중도상환", "상품권 환불",
+        "셈프라", "sempra", "포럼 개최", "창립기념 포럼", "에너지 인프라 시장", "smr² 플랫폼 국가연구소",
+        "상상력", "문제 정의 능력", "surf day",
+    )
+    concrete_markers = (
+        "아키텍처", "워크플로", "알고리즘", "프로토콜", "규제", "표준", "가이드라인",
+        "취약점", "sbom", "rag", "데이터베이스", "api", "보안", "실증", "성능",
+        "감소", "향상", "수율", "생산성", "컴포저블", "하네스", "mcp", "출시", "구축",
+    )
+    generic_event_patterns = ("포럼", "행사", "협력", "업무협약", "설문조사")
+    concrete_count = sum(1 for marker in concrete_markers if marker in haystack)
+    forum_announcement = "포럼" in title and "개최" in title
+    obvious_noise = forum_announcement or any(pattern in title for pattern in obvious_noise_patterns)
+    generic_event_in_title = (
+        any(pattern in title for pattern in generic_event_patterns)
+        or re.search(r"\bmou\b", title) is not None
+    )
+    generic_without_mechanism = generic_event_in_title and concrete_count < 2
+
+    trombone_lifecycle_patterns = (
+        "ci/cd", "cicd", "devops", "devsecops", "platform engineering", "플랫폼 엔지니어링",
+        "배포 파이프라인", "배포 자동화", "릴리스 파이프라인", "release pipeline",
+        "변경 관리", "변경관리", "change management", "소프트웨어 공급망", "software supply chain",
+        "개발 워크플로", "개발자 워크플로", "developer workflow", "코드 생성", "ai 코딩",
+        "코딩 에이전트", "바이브 코딩", "developer experience", "개발자 경험", "codex security",
+        "배포 전 검증", "deployment simulation", "attestation", "provenance", "변조 방지 실행 이력",
+        "sre", "aiops", "관측성", "런타임 정책",
+    )
+    pure_ai_patterns = (
+        "생성형 ai", "foundation model", "파운데이션 모델", "llm", "대규모 언어 모델",
+        "ai 모델", "ai 기술", "ai 성능", "ai 활용", "ai 도입", "ai 에이전트", "chatgpt", "gpt-",
+    )
+    financial_patterns = ("금융", "은행", "보험", "증권", "핀테크")
+    governance_patterns = ("규제", "감사", "통제", "추적", "망분리", "컴플라이언스", "거버넌스")
+    has_lifecycle_mechanism = any(pattern in haystack for pattern in trombone_lifecycle_patterns)
+    has_pure_ai_topic = any(pattern in haystack for pattern in pure_ai_patterns)
+    has_financial_context = any(pattern in haystack for pattern in financial_patterns)
+    has_governance_context = any(pattern in haystack for pattern in governance_patterns)
+    minor_devtool_patterns = (
+        "saved views", "저장뷰", "row heights", "row height", "issue creation", "issue 생성",
+        "restrict issue", "collaborators only", "github desktop", "desktop 3.", "desktop version",
+        "ai credit", "credit pools", "billing", "budget limits", "hard budget", "free and student plans", "model selection for free",
+        "projects", "repository issues",
+    )
+    devtool_source_patterns = ("github", "gitlab", "copilot", "jetbrains", "vs code")
+    strong_lifecycle_devtool_patterns = (
+        "runner", "runners", "actions", "ci/cd", "deployment", "deploy", "pipeline", "secret scanning",
+        "code scanning", "merge protection", "pull request", "agent session", "copilot agent",
+        "code review", "credential revocation", "incident response", "provenance", "attestation",
+    )
+    is_devtool_item = any(pattern in haystack for pattern in devtool_source_patterns)
+    has_minor_devtool_update = any(pattern in haystack for pattern in minor_devtool_patterns)
+    has_strong_devtool_lifecycle = any(pattern in haystack for pattern in strong_lifecycle_devtool_patterns)
+
+    network_separation_change = (
+        "망분리" in haystack
+        and evidence_quality["sufficient"]
+        and any(
+            marker in haystack
+            for marker in ("규제 완화", "의무를 면제", "의무'를 면제", "비조치의견서", "전자금융감독규정")
+        )
+    )
+    if network_separation_change:
+        guarded["primary_bucket"] = "work_signal"
+        guarded["score"] = max(int(guarded.get("score") or 0), 85)
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), 82), 88)
+        guarded["reason"] = (
+            "[코드 안전장치] 충분한 본문에서 금융권 망분리 의무의 구체적 완화·면제 조치를 "
+            f"확인해 업무 신호로 보존했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "preserved_regulatory_work_signal"
+        return guarded
+
+    if (
+        evidence_quality["sufficient"]
+        and evidence_points
+        and has_lifecycle_mechanism
+        and not obvious_noise
+        and not generic_without_mechanism
+        and not (has_minor_devtool_update and not has_strong_devtool_lifecycle)
+    ):
+        guarded["primary_bucket"] = "work_signal"
+        guarded["score"] = max(int(guarded.get("score") or 0), 82 if has_financial_context else 78)
+        minimum_confidence = 82 if has_financial_context and has_governance_context else 76
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), minimum_confidence), 88)
+        guarded["reason"] = (
+            "[TROMBONE 기준] 개발·배포·운영 워크플로 또는 변경 통제와 직접 연결된 "
+            f"구체 근거를 확인해 업무 신호로 보존했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "preserved_trombone_work_signal"
+        return guarded
+
+    if bucket == "work_signal" and is_devtool_item and has_minor_devtool_update and not has_strong_devtool_lifecycle:
+        target_bucket = "noise" if any(pattern in haystack for pattern in ("github desktop", "desktop 3.", "row height", "row heights")) else "learning_signal"
+        guarded["primary_bucket"] = target_bucket
+        guarded["score"] = min(int(guarded.get("score") or 0), 60 if target_bucket == "learning_signal" else 40)
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), 74), 82)
+        guarded["reason"] = (
+            "[TROMBONE 기준] 개발도구 소식이지만 개발·배포·운영 프로세스나 변경 통제를 "
+            f"실제로 바꾸는 근거가 약한 사소한 기능/정책 업데이트라 {database.EDITOR_BUCKET_LABELS[target_bucket]}로 조정했습니다. "
+            f"{guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "demoted_minor_devtool_update"
+        return guarded
+
+    if bucket == "work_signal" and has_pure_ai_topic and not has_lifecycle_mechanism:
+        guarded["primary_bucket"] = "learning_signal"
+        guarded["score"] = min(int(guarded.get("score") or 0), 75)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 85)
+        guarded["reason"] = (
+            "[TROMBONE 기준] AI 자체 동향이며 개발·배포·운영 또는 변경 통제와의 직접 연결이 "
+            f"확인되지 않아 학습 신호로 조정했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "demoted_pure_ai_to_learning"
+        return guarded
+
+    if bucket == "noise":
+        noise_cap = 70 + min(12, len(evidence_points) * 3) + (4 if obvious_noise else 0)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), noise_cap, 88)
+        guarded["guardrail"] = "noise_evidence_checked"
+        return guarded
+
+    if bucket == "review_queue":
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 65)
+        guarded["guardrail"] = "review_queue_evidence_checked"
+        return guarded
+
+    if obvious_noise or generic_without_mechanism:
+        guarded["primary_bucket"] = "noise"
+        guarded["score"] = min(int(guarded.get("score") or 0), 35)
+        guarded["confidence"] = 88 if obvious_noise else 78
+        trigger = "명백한 교육·행사·키워드 오염 유형" if obvious_noise else "구체 메커니즘이 부족한 일반 행사·협력 유형"
+        guarded["reason"] = (
+            f"[코드 안전장치] {trigger}이라 긍정 신호로 자동 승격하지 않았습니다. "
+            f"{guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "forced_noise"
+        return guarded
+
+    if not evidence_points:
+        guarded["primary_bucket"] = "review_queue"
+        guarded["score"] = min(int(guarded.get("score") or 0), 55)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 65)
+        guarded["reason"] = (
+            "[코드 안전장치] 재사용 가능한 기술·시장 메커니즘을 evidence에서 확인하지 못해 "
+            "자동 승격하지 않았습니다."
+        )
+        guarded["guardrail"] = "forced_review_queue"
+        return guarded
+
+    # Model confidence was clustered at 90/95 in the first pilot. Cap it by
+    # independently observable evidence richness rather than trusting tone.
+    evidence_cap = 68 + min(12, len(evidence_points) * 3) + min(7, concrete_count)
+    guarded["confidence"] = min(int(guarded.get("confidence") or 0), evidence_cap, 89)
+    guarded["guardrail"] = "positive_evidence_checked"
+    return guarded
 
 
 async def refine_editor_review_item(api_key: str, item: Dict[str, Any], profile_context: str = "") -> Dict[str, Any]:
@@ -638,8 +847,18 @@ def get_ollama_status(model: str = EDITOR_OLLAMA_MODEL, timeout_seconds: int = 3
         }
 
 
-def get_ollama_backfill_preview(profile_id: int, limit: int = 2000) -> Dict[str, Any]:
-    candidates = database.get_editor_ollama_backfill_candidates(profile_id, limit=limit)
+def get_ollama_backfill_preview(
+    profile_id: int,
+    limit: int = 2000,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> Dict[str, Any]:
+    candidates = database.get_editor_ollama_backfill_candidates(
+        profile_id,
+        limit=limit,
+        primary_bucket=primary_bucket,
+        item_type=item_type,
+    )
     eligible = []
     insufficient = []
     for item in candidates:
@@ -666,6 +885,8 @@ def get_ollama_backfill_preview(profile_id: int, limit: int = 2000) -> Dict[str,
 
     return {
         "profile_id": profile_id,
+        "primary_bucket": primary_bucket or "all",
+        "item_type": item_type or "all",
         "model": EDITOR_OLLAMA_MODEL,
         "candidate_count": len(candidates),
         "eligible_count": len(eligible),
@@ -684,45 +905,87 @@ def _prepare_operational_review(review: Dict[str, Any]) -> Dict[str, Any]:
     return prepared
 
 
-def run_ollama_backfill(profile_id: int, limit: int = 200) -> Dict[str, Any]:
+def _select_grouped_ollama_targets(eligible: list[Dict[str, Any]], limit: int) -> list[Dict[str, Any]]:
+    """Select up to limit source items while keeping confirmed event groups intact."""
+    by_group: Dict[str, list[Dict[str, Any]]] = {}
+    for item in eligible:
+        event_key = str(item.get("event_group_key") or "").strip()
+        key = event_key or f"item:{item['item_type']}:{item['item_id']}"
+        by_group.setdefault(key, []).append(item)
+
+    units = []
+    selected_count = 0
+    for key, members in by_group.items():
+        if selected_count and selected_count + len(members) > limit:
+            continue
+        representative = max(members, key=lambda row: len(row.get("summary") or ""))
+        units.append({"key": key, "representative": representative, "members": members})
+        selected_count += len(members)
+        if selected_count >= limit:
+            break
+    return units
+
+
+def run_ollama_backfill(
+    profile_id: int,
+    limit: int = 200,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> Dict[str, Any]:
     ollama = get_ollama_status()
     if not ollama["available"]:
         raise RuntimeError("Ollama 또는 gemma4:latest 모델을 사용할 수 없어 아무 항목도 변경하지 않았습니다.")
 
-    preview = get_ollama_backfill_preview(profile_id, limit=2000)
-    targets = preview["eligible"][:max(1, min(int(limit or 200), 500))]
+    preview = get_ollama_backfill_preview(
+        profile_id,
+        limit=2000,
+        primary_bucket=primary_bucket,
+        item_type=item_type,
+    )
+    target_limit = max(1, min(int(limit or 200), 500))
+    units = _select_grouped_ollama_targets(preview["eligible"], target_limit)
+    targets = [member for unit in units for member in unit["members"]]
     profile_context = build_editor_profile_context(profile_id)
     results = []
     started_at = datetime.now()
 
-    for item in targets:
-        if database.has_user_editor_judgment(profile_id, item["item_type"], item["item_id"]):
-            continue
+    for unit in units:
+        item = unit["representative"]
         review = refine_editor_review_item_ollama(EDITOR_OLLAMA_MODEL, item, profile_context)
         review = _prepare_operational_review(review)
-        if item.get("ai_review_id"):
-            saved = database.update_ai_editor_review_classification(
-                profile_id=profile_id,
-                ai_review_id=int(item["ai_review_id"]),
-                review=review,
-            )
-        else:
-            saved = database.save_ai_editor_review(
-                profile_id=profile_id,
-                item_type=item["item_type"],
-                item_id=int(item["item_id"]),
-                review=review,
-            )
-        results.append({
-            "ai_review_id": saved.get("id"),
-            "item_type": item["item_type"],
-            "item_id": item["item_id"],
-            "title": item.get("title", ""),
-            "primary_bucket": review.get("primary_bucket"),
-            "score": review.get("score"),
-            "confidence": review.get("confidence"),
-            "evidence_points": review.get("evidence_points", []),
-        })
+        for member in unit["members"]:
+            if database.has_user_editor_judgment(profile_id, member["item_type"], member["item_id"]):
+                continue
+            if member.get("ai_review_id"):
+                saved = database.update_ai_editor_review_classification(
+                    profile_id=profile_id,
+                    ai_review_id=int(member["ai_review_id"]),
+                    review=review,
+                )
+            else:
+                saved = database.save_ai_editor_review(
+                    profile_id=profile_id,
+                    item_type=member["item_type"],
+                    item_id=int(member["item_id"]),
+                    review=review,
+                )
+            results.append({
+                "ai_review_id": saved.get("id"),
+                "item_type": member["item_type"],
+                "item_id": member["item_id"],
+                "title": member.get("title", ""),
+                "event_group_key": member.get("event_group_key") or "",
+                "classified_via_representative": member["item_id"] != item["item_id"],
+                "previous_bucket": member.get("existing_bucket"),
+                "previous_score": member.get("score"),
+                "previous_confidence": member.get("confidence"),
+                "primary_bucket": review.get("primary_bucket"),
+                "score": review.get("score"),
+                "confidence": review.get("confidence"),
+                "reason": review.get("reason"),
+                "suggested_tags": review.get("suggested_tags", []),
+                "evidence_points": review.get("evidence_points", []),
+            })
 
     bucket_counts: Dict[str, int] = {}
     for result in results:
@@ -731,7 +994,10 @@ def run_ollama_backfill(profile_id: int, limit: int = 200) -> Dict[str, Any]:
     return {
         "success": True,
         "model": EDITOR_OLLAMA_MODEL,
+        "primary_bucket": primary_bucket or "all",
+        "item_type": item_type or "all",
         "target_count": len(targets),
+        "model_calls": len(units),
         "completed": len(results),
         "elapsed_seconds": round((datetime.now() - started_at).total_seconds(), 1),
         "bucket_counts": bucket_counts,
@@ -1711,19 +1977,17 @@ async def api_save_editor_judgment(payload: EditorJudgmentPayload):
 @app.post("/api/summary/{item_type}/{item_id}")
 async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
     """Generates an AI summary for one selected collected item."""
-    if Agent is None or LocalAgentConfig is None:
-        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
-
     profile = database.get_profile_by_id(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found.")
 
-    api_key = profile.get("gemini_api_key", "")
-    if not api_key or api_key == "••••••••":
-        raise HTTPException(status_code=400, detail="Gemini API Key is required for selected AI summaries.")
-
     try:
         if item_type == "doc":
+            if Agent is None or LocalAgentConfig is None:
+                raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+            api_key = profile.get("gemini_api_key", "")
+            if not api_key or api_key == "••••••••":
+                raise HTTPException(status_code=400, detail="Gemini API Key is required for selected document summaries.")
             item = database.get_doc_by_id(item_id)
             if not item or item.get("profile_id") != profile_id:
                 raise HTTPException(status_code=404, detail="Doc item not found.")
@@ -1742,15 +2006,29 @@ async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
             item = database.get_trend_by_id(item_id)
             if not item or item.get("profile_id") != profile_id:
                 raise HTTPException(status_code=404, detail="Trend item not found.")
-            analysis = await summarize_trend_item(api_key, item)
-            database.update_trend_analysis(
+            analysis = await asyncio.to_thread(summarize_trend_item_with_ollama, item)
+            updated = database.update_scanned_trend_content(
                 item_id,
-                analysis["title"],
-                analysis["summary"],
-                analysis["source"],
-                "complete",
-                ""
+                keyword=item.get("keyword", ""),
+                title=item.get("title", ""),
+                link=analysis.get("original_url") or item.get("link", ""),
+                summary=analysis["summary"],
+                source=analysis["source"],
+                published_at=item.get("published_at", ""),
+                analysis_status="complete",
+                analysis_error="",
+                original_url=analysis.get("original_url", ""),
+                source_url=analysis.get("source_url", ""),
+                content_status=analysis.get("content_status", "summarized"),
+                content_error="",
+                content_chars=analysis.get("content_chars", 0),
+                content_extractor=analysis.get("content_extractor", ""),
+                content_resolver=analysis.get("resolver", ""),
+                summary_model=analysis.get("summary_model", ""),
+                summary_evidence=analysis.get("evidence_points", []),
             )
+            if not updated:
+                raise RuntimeError("요약은 생성됐지만 기존 항목 저장에 실패했습니다.")
             return {"message": "Trend summary generated.", "item": database.get_trend_by_id(item_id)}
 
         raise HTTPException(status_code=400, detail="item_type must be 'doc' or 'trend'.")

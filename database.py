@@ -1143,7 +1143,7 @@ def increment_doc_retry(doc_id: int, error_msg: str):
     try:
         cursor.execute(
             """UPDATE scanned_docs
-               SET retry_count = retry_count + 1, analysis_error = ?
+               SET retry_count = retry_count + 1, analysis_status = 'pending', analysis_error = ?
                WHERE id = ?""",
             (error_msg, doc_id)
         )
@@ -1157,7 +1157,7 @@ def increment_trend_retry(trend_id: int, error_msg: str):
     try:
         cursor.execute(
             """UPDATE scanned_trends
-               SET retry_count = retry_count + 1, analysis_error = ?
+               SET retry_count = retry_count + 1, analysis_status = 'pending', analysis_error = ?
                WHERE id = ?""",
             (error_msg, trend_id)
         )
@@ -2552,9 +2552,18 @@ def get_editor_refine_pilot_targets(profile_id: int, limit: int = 15, item_type:
     finally:
         conn.close()
 
-def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) -> List[Dict[str, Any]]:
+def get_editor_ollama_backfill_candidates(
+    profile_id: int,
+    limit: int = 1000,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> List[Dict[str, Any]]:
     """Returns unjudged raw items that can be previewed before an Ollama backfill."""
     limit = max(1, min(int(limit or 1000), 2000))
+    if primary_bucket and primary_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {primary_bucket}")
+    if item_type and item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -2577,7 +2586,10 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                     COALESCE(d.manual_saved, 0) AS manual_saved,
                     ar.primary_bucket AS existing_bucket,
                     ar.classification_source,
-                    ar.suggested_tags
+                    ar.suggested_tags,
+                    ar.event_group_key,
+                    ar.score,
+                    ar.confidence
                 FROM scanned_docs d
                 LEFT JOIN ai_editor_reviews ar
                   ON ar.profile_id = d.profile_id
@@ -2612,7 +2624,10 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                     COALESCE(t.manual_saved, 0) AS manual_saved,
                     ar.primary_bucket AS existing_bucket,
                     ar.classification_source,
-                    ar.suggested_tags
+                    ar.suggested_tags,
+                    ar.event_group_key,
+                    ar.score,
+                    ar.confidence
                 FROM scanned_trends t
                 LEFT JOIN ai_editor_reviews ar
                   ON ar.profile_id = t.profile_id
@@ -2629,6 +2644,8 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                         AND j.item_id = t.id
                   )
             ) candidates
+            WHERE (? = '' OR existing_bucket = ?)
+              AND (? = '' OR item_type = ?)
             ORDER BY
                 CASE
                     WHEN item_type = 'doc' AND category = 'reference' THEN 1
@@ -2638,7 +2655,7 @@ def get_editor_ollama_backfill_candidates(profile_id: int, limit: int = 1000) ->
                 COALESCE(NULLIF(published_at, ''), item_created_at) DESC
             LIMIT ?
             """,
-            (profile_id, profile_id, limit),
+            (profile_id, profile_id, primary_bucket, primary_bucket, item_type, item_type, limit),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:
@@ -2667,6 +2684,13 @@ def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool
                     d.analysis_status,
                     d.is_starred,
                     COALESCE(d.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
                     CASE
                         WHEN COALESCE(d.manual_saved, 0) = 1
                              OR ar.primary_bucket IN ('work_signal', 'learning_signal')
@@ -2696,6 +2720,13 @@ def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool
                     t.analysis_status,
                     t.is_starred,
                     COALESCE(t.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
                     CASE
                         WHEN COALESCE(t.manual_saved, 0) = 1
                              OR ar.primary_bucket IN ('work_signal', 'learning_signal')
@@ -2759,6 +2790,13 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     d.analysis_status,
                     d.is_starred,
                     COALESCE(d.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
                     CASE
                         WHEN COALESCE(d.manual_saved, 0) = 1
                              OR ar.primary_bucket IN ('work_signal', 'learning_signal')
@@ -2784,6 +2822,13 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                     t.analysis_status,
                     t.is_starred,
                     COALESCE(t.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
                     CASE
                         WHEN COALESCE(t.manual_saved, 0) = 1
                              OR ar.primary_bucket IN ('work_signal', 'learning_signal')
@@ -2821,6 +2866,15 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
         for bucket in ["review_queue", "work_signal", "learning_signal", "noise"]:
             raw_items = [r for r in rows if r.get("primary_bucket") == bucket]
             all_unique_items, folded_count = _dedupe_candidate_items(raw_items, len(raw_items) or limit_per_bucket)
+            unconfirmed_raw_items = [
+                item for item in raw_items
+                if item.get("classification_source") == "llm"
+                and int(item.get("has_user_judgment") or 0) == 0
+            ]
+            unconfirmed_unique_items, unconfirmed_folded_count = _dedupe_candidate_items(
+                unconfirmed_raw_items,
+                len(unconfirmed_raw_items) or limit_per_bucket,
+            )
             event_grouped_count = sum(
                 max(0, int(item.get("event_group_count") or 1) - 1)
                 for item in all_unique_items
@@ -2837,6 +2891,14 @@ def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, includ
                 "deduped_count": folded_count,
                 "url_deduped_count": url_deduped_count,
                 "event_grouped_count": event_grouped_count,
+                "unconfirmed_total": len(unconfirmed_raw_items),
+                "unconfirmed_unique_total": len(unconfirmed_unique_items),
+                "unconfirmed_folded_count": unconfirmed_folded_count,
+                # The ordinary candidate lanes stay deliberately short, but the
+                # Gemma review workbench must expose every unconfirmed decision.
+                # Event-group members are already folded into one representative,
+                # so this remains a bounded list without hiding review work.
+                "unconfirmed_items": unconfirmed_unique_items,
             })
         return {
             "buckets": buckets,

@@ -3642,6 +3642,203 @@ body {
     margin-bottom: 10px;
 }
 
+.gemma-review-workbench {
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(88, 28, 135, 0.14), rgba(15, 23, 42, 0.78));
+    grid-column: 1 / -1;
+    margin-bottom: 18px;
+    padding: 14px;
+}
+
+.gemma-review-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.gemma-review-header h3 {
+    color: #e9d5ff;
+    font-size: 15px;
+    margin: 2px 0 4px;
+}
+
+.gemma-review-header p,
+.gemma-review-bucket > p {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.gemma-review-header > strong {
+    background: rgba(168, 85, 247, 0.16);
+    border: 1px solid rgba(196, 181, 253, 0.3);
+    border-radius: 999px;
+    color: #ddd6fe;
+    font-size: 12px;
+    padding: 6px 10px;
+    white-space: nowrap;
+}
+
+.gemma-review-kicker {
+    color: #a78bfa;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+}
+
+.gemma-review-buckets {
+    display: grid;
+    gap: 9px;
+}
+
+.gemma-review-bucket {
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.64);
+    padding: 9px 10px;
+}
+
+.gemma-review-bucket > summary {
+    align-items: center;
+    color: #cbd5e1;
+    cursor: pointer;
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.gemma-review-bucket > summary strong {
+    color: #ddd6fe;
+}
+
+.gemma-review-bucket > summary small {
+    color: var(--text-help);
+    font-size: 9px;
+    font-weight: 600;
+}
+
+.gemma-review-bucket > p {
+    margin: 7px 0 9px;
+}
+
+.gemma-review-bucket .gemma-compact-grid {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 8px;
+}
+
+.insight-card.is-review-compact {
+    cursor: default;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 9px 10px;
+}
+
+.insight-card.is-review-compact .insight-card-title {
+    display: -webkit-box;
+    font-size: 11px;
+    line-height: 1.4;
+    margin-bottom: 6px;
+    min-height: 2.8em;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.insight-compact-status {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.insight-compact-status span,
+.insight-compact-status strong {
+    border-radius: 999px;
+    font-size: 9px;
+    padding: 2px 6px;
+    white-space: nowrap;
+}
+
+.insight-compact-status span {
+    background: rgba(168, 85, 247, 0.11);
+    border: 1px solid rgba(168, 85, 247, 0.24);
+    color: #d8b4fe;
+}
+
+.insight-compact-status strong {
+    color: var(--text-help);
+    font-weight: 700;
+}
+
+.insight-card.is-review-compact .insight-card-tags {
+    gap: 4px;
+    margin-bottom: 7px;
+    min-height: 18px;
+}
+
+.insight-card.is-review-compact .insight-card-tags span {
+    font-size: 8px;
+    padding: 1px 5px;
+}
+
+.insight-card.is-review-compact .is-compact-score {
+    display: none;
+}
+
+.insight-card.is-review-compact .insight-card-actions {
+    gap: 4px;
+    margin-top: auto;
+}
+
+.insight-card.is-review-compact .insight-action-btn,
+.insight-card.is-review-compact .insight-summary-btn {
+    flex: 1 1 auto;
+    font-size: 8px;
+    padding: 4px 5px;
+}
+
+.insight-card-details {
+    border-top: 1px solid rgba(148, 163, 184, 0.14);
+    margin-top: 8px;
+    padding-top: 7px;
+}
+
+.insight-card-details > summary {
+    color: #a78bfa;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.insight-card-details[open] > summary {
+    margin-bottom: 8px;
+}
+
+.insight-card-details .insight-card-meta {
+    margin-bottom: 8px;
+}
+
+@media (min-width: 1500px) {
+    .gemma-review-bucket .gemma-compact-grid {
+        grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
+    }
+}
+
+@media (max-width: 760px) {
+    .gemma-review-bucket .gemma-compact-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .insight-card-actions {
     display: flex;
     flex-wrap: wrap;

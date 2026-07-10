@@ -3029,6 +3029,12 @@ async function loadInsightCandidates() {
 
 function renderInsightCandidates(data) {
     if (!DOM.insightCandidateBuckets) return;
+    const previousGemmaWorkbench = DOM.insightCandidateBuckets.querySelector(".gemma-review-workbench");
+    const openGemmaBuckets = new Set(
+        Array.from(DOM.insightCandidateBuckets.querySelectorAll(".gemma-review-bucket[open]"))
+            .map(bucket => bucket.getAttribute("data-bucket"))
+            .filter(Boolean)
+    );
     const reviewQueue = (data?.buckets || []).find(bucket => bucket.bucket === "review_queue") || {
         bucket: "review_queue",
         label: "검토 대기",
@@ -3046,6 +3052,11 @@ function renderInsightCandidates(data) {
     const urlFoldedCount = reviewQueue.url_deduped_count || 0;
     const eventFoldedCount = reviewQueue.event_grouped_count || 0;
     const noiseTotal = noiseBucket.total || 0;
+    const gemmaReviewHtml = renderGemmaUnconfirmedReview(
+        data?.buckets || [],
+        openGemmaBuckets,
+        Boolean(previousGemmaWorkbench),
+    );
 
     if (DOM.insightCandidateStatus) {
         DOM.insightCandidateStatus.textContent = pendingTotal
@@ -3054,6 +3065,7 @@ function renderInsightCandidates(data) {
     }
 
     DOM.insightCandidateBuckets.innerHTML = `
+        ${gemmaReviewHtml}
         <div class="insight-bucket review-workbench" data-bucket="${escapeHtml(reviewQueue.bucket)}">
             <div class="insight-bucket-header">
                 <span class="insight-bucket-title">${escapeHtml(reviewQueue.label)}</span>
@@ -3090,14 +3102,70 @@ function renderInsightCandidates(data) {
     setupInsightDragAndDrop();
 }
 
-function renderInsightCard(item) {
+function renderGemmaUnconfirmedReview(buckets, openBuckets = new Set(), preserveOpenState = false) {
+    const order = ["work_signal", "learning_signal", "noise", "review_queue"];
+    const labels = {
+        work_signal: "업무 신호",
+        learning_signal: "학습 신호",
+        noise: "노이즈",
+        review_queue: "판단 보류",
+    };
+    const descriptions = {
+        work_signal: "제안·전략·경쟁사 분석에 바로 쓸 가능성이 높은 Gemma 초안입니다.",
+        learning_signal: "기술 감각과 장기 지식 축적에 유용하다고 본 Gemma 초안입니다.",
+        noise: "재사용 가치가 낮다고 본 항목입니다. 잘못 내려간 것만 살려주세요.",
+        review_queue: "근거가 부족하거나 경계선이라 Gemma가 확정하지 않은 항목입니다.",
+    };
+    const byBucket = Object.fromEntries((buckets || []).map(bucket => [bucket.bucket, bucket]));
+    const total = order.reduce((sum, key) => sum + Number(byBucket[key]?.unconfirmed_total || 0), 0);
+    if (!total) return "";
+
+    const sections = order.map(key => {
+        const bucket = byBucket[key] || {};
+        const items = bucket.unconfirmed_items || [];
+        const count = Number(bucket.unconfirmed_total || 0);
+        const uniqueCount = Number(bucket.unconfirmed_unique_total || count);
+        const shouldOpen = preserveOpenState ? openBuckets.has(key) : key === "work_signal";
+        const openAttribute = shouldOpen ? " open" : "";
+        return `
+            <details class="gemma-review-bucket ${escapeHtml(key)}" data-bucket="${escapeHtml(key)}"${openAttribute}>
+                <summary>
+                    <span>${escapeHtml(labels[key])}</span>
+                    <strong>${count}건</strong>
+                    ${uniqueCount < count ? `<small>묶음 적용 후 ${uniqueCount}장</small>` : ""}
+                </summary>
+                <p>${escapeHtml(descriptions[key])}</p>
+                <div class="insight-card-list gemma-compact-grid">
+                    ${items.length ? items.map(item => renderInsightCard(item, { compact: true })).join("") : `<div class="insight-empty">현재 확인할 항목이 없습니다.</div>`}
+                </div>
+            </details>
+        `;
+    }).join("");
+
+    return `
+        <section class="gemma-review-workbench">
+            <div class="gemma-review-header">
+                <div>
+                    <span class="gemma-review-kicker">GEMMA REVIEW</span>
+                    <h3>Gemma 자동 분류 · 미확인</h3>
+                    <p>AI가 올린 초안 ${total}건입니다. 같은 버킷을 누르면 확정되고, 다른 버킷을 누르면 교정됩니다.</p>
+                </div>
+                <strong>${total}건</strong>
+            </div>
+            <div class="gemma-review-buckets">${sections}</div>
+        </section>
+    `;
+}
+
+function renderInsightCard(item, options = {}) {
+    const compact = Boolean(options.compact);
     const source = item.source_name || item.category || "-";
     const dateText = item.published_at
         ? `발행 ${formatDate(item.published_at)}`
         : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
     const tags = parseInsightTags(item.suggested_tags || item.secondary_buckets);
     const keywordTags = parseInsightTags(item.matched_keywords || "").filter(tag => !tags.includes(tag));
-    const allTags = tags.concat(keywordTags).slice(0, 8);
+    const allTags = tags.concat(keywordTags).slice(0, compact ? 4 : 8);
     const tagHtml = allTags.length
         ? `<div class="insight-card-tags">${allTags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
         : "";
@@ -3116,36 +3184,66 @@ function renderInsightCard(item) {
         ? `<button class="insight-summary-btn" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">AI 요약 생성</button>`
         : "";
     const isPrecisionClassified = item.classification_source === "llm";
-    const sourceLabel = isPrecisionClassified ? "정밀 분류" : "규칙 분류";
+    const sourceLabel = isPrecisionClassified ? "Gemma 자동 분류 · 미확인" : "규칙 분류";
     const refineActionHtml = !isPrecisionClassified && item.primary_bucket === "review_queue"
         ? `<button class="insight-refine-btn" data-review-id="${item.id}">정밀 분류</button>`
         : "";
-    return `
-        <article class="insight-card" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
-            <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
-            ${tagHtml}
-            <div class="insight-card-meta">
-                <span>${escapeHtml(source)}</span>
-                <span>${escapeHtml(dateText)}</span>
-                <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
-                <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
-                ${Number(item.dedupe_count || 1) > 1 ? `<span>같은 원문 ${Number(item.dedupe_count)}건 접음</span>` : ""}
-                ${Number(item.event_group_count || 1) > 1 ? `<span>같은 사건 ${Number(item.event_group_count)}건 묶음</span>` : ""}
-            </div>
-            <div class="insight-card-score">
-                <span>점수 ${Number(item.score || 0)}</span>
-                <span>확신도 ${Number(item.confidence || 0)}</span>
-            </div>
+    const actionLabels = isPrecisionClassified ? {
+        work_signal: item.primary_bucket === "work_signal" ? "업무 신호 확정" : "업무로 교정",
+        learning_signal: item.primary_bucket === "learning_signal" ? "학습 신호 확정" : "학습으로 교정",
+        noise: item.primary_bucket === "noise" ? "노이즈 확정" : "노이즈로 교정",
+    } : {
+        work_signal: "업무 신호",
+        learning_signal: "학습 신호",
+        noise: "노이즈",
+    };
+    const bucketLabels = {
+        work_signal: "업무 신호 초안",
+        learning_signal: "학습 신호 초안",
+        noise: "노이즈 초안",
+        review_queue: "판단 보류",
+    };
+    const metaHtml = `
+        <div class="insight-card-meta">
+            <span>${escapeHtml(source)}</span>
+            <span>${escapeHtml(dateText)}</span>
+            <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
+            <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
+            ${Number(item.dedupe_count || 1) > 1 ? `<span>같은 원문 ${Number(item.dedupe_count)}건 접음</span>` : ""}
+            ${Number(item.event_group_count || 1) > 1 ? `<span>같은 사건 ${Number(item.event_group_count)}건 묶음</span>` : ""}
+        </div>
+    `;
+    const detailHtml = compact ? `
+        <details class="insight-card-details">
+            <summary>AI 요약·분류 근거 보기</summary>
+            ${metaHtml}
             ${summaryHtml}
             ${renderInsightEventGroup(item)}
             <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
+        </details>
+    ` : `
+        ${metaHtml}
+        ${summaryHtml}
+        ${renderInsightEventGroup(item)}
+        <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
+    `;
+    return `
+        <article class="insight-card ${compact ? "is-review-compact" : ""}" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
+            <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
+            ${compact ? `<div class="insight-compact-status"><span>${escapeHtml(bucketLabels[item.primary_bucket] || item.primary_bucket)}</span><strong>점수 ${Number(item.score || 0)} · 확신도 ${Number(item.confidence || 0)}</strong></div>` : ""}
+            ${tagHtml}
+            <div class="insight-card-score ${compact ? "is-compact-score" : ""}">
+                <span>점수 ${Number(item.score || 0)}</span>
+                <span>확신도 ${Number(item.confidence || 0)}</span>
+            </div>
             <div class="insight-card-actions">
                 ${summaryActionHtml}
                 ${refineActionHtml}
-                <button class="insight-action-btn positive" data-move-bucket="work_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">업무 신호</button>
-                <button class="insight-action-btn learning" data-move-bucket="learning_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">학습 신호</button>
-                <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">노이즈</button>
+                <button class="insight-action-btn positive" data-move-bucket="work_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.work_signal}</button>
+                <button class="insight-action-btn learning" data-move-bucket="learning_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.learning_signal}</button>
+                <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.noise}</button>
             </div>
+            ${detailHtml}
         </article>
     `;
 }
