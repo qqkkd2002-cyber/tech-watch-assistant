@@ -16,6 +16,7 @@ let lastRenderedLogText = "";
 let competitorChartInstance = null;
 let keywordChartInstance = null;
 let tagChartInstance = null;
+let latestInsightCandidateData = null;
 const FEED_FETCH_LIMIT = 40;
 const FEED_RENDER_LIMIT = 80;
 
@@ -45,6 +46,31 @@ function updateFolderChips(chipsContainer, rowContainer, uniqueFolders, activeFo
     rowContainer.style.display = "flex";
 }
 
+function getStarredReason(item) {
+    if (item.star_reason === "work_signal" || item.editor_bucket === "work_signal") {
+        return "work_signal";
+    }
+    if (item.star_reason === "learning_signal" || item.editor_bucket === "learning_signal") {
+        return "learning_signal";
+    }
+    return "manual";
+}
+
+function getStarredReasonLabel(reason) {
+    if (reason === "work_signal") return "업무 신호";
+    if (reason === "learning_signal") return "학습 신호";
+    return "수동 저장";
+}
+
+function isContentPending(item) {
+    const status = String(item.content_status || "");
+    return status && status !== "not_attempted" && status !== "summarized";
+}
+
+function getPendingLabel(item) {
+    return isContentPending(item) ? "본문 확보 대기" : "AI 요약 대기";
+}
+
 function createFeedCard(item, tabType) {
     const card = document.createElement("div");
     
@@ -55,8 +81,9 @@ function createFeedCard(item, tabType) {
     }
     
     card.className = `feed-card-compact type-${cardType}`;
-    const starClass = item.is_starred ? "active" : "";
-    const starTitle = tabType === "starred" ? "중요 보관함 해제" : "중요 보관함 저장";
+    const isManuallySaved = Number(item.manual_saved ?? item.is_starred ?? 0) === 1;
+    const starClass = isManuallySaved ? "active" : "";
+    const starTitle = isManuallySaved ? "수동 저장 해제" : "수동 저장";
     
     const publishedDate = getPublishedDate(item);
     const collectedDate = formatDateOnly(item.created_at);
@@ -66,12 +93,27 @@ function createFeedCard(item, tabType) {
         
     const itemType = item.type === "doc" ? "doc" : "trend";
     const isAnalysisPending = item.analysis_status === "pending";
+    const contentPending = itemType === "trend" && isContentPending(item);
+    const starReason = tabType === "starred" ? getStarredReason(item) : "";
+    const starReasonBadge = tabType === "starred"
+        ? `<span class="badge badge-star-reason reason-${starReason}">${getStarredReasonLabel(starReason)}</span>`
+        : "";
+    const editorActionsHtml = tabType === "starred"
+        ? `
+            <div class="starred-editor-actions">
+                <span>판단 수정</span>
+                <button class="starred-judgment-btn work" data-label="work_signal" data-id="${item.id}" data-type="${itemType}">업무</button>
+                <button class="starred-judgment-btn learning" data-label="learning_signal" data-id="${item.id}" data-type="${itemType}">학습</button>
+                <button class="starred-judgment-btn noise" data-label="noise" data-id="${item.id}" data-type="${itemType}">노이즈</button>
+            </div>
+        `
+        : "";
     let pendingBadge = "";
     if (isAnalysisPending) {
         if (item.retry_count >= 5) {
             pendingBadge = `<span class="badge badge-pending" style="background: linear-gradient(135deg, var(--color-danger), #dc2626); box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);">AI 요약 실패</span>`;
         } else {
-            pendingBadge = `<span class="badge badge-pending">AI 요약 대기</span>`;
+            pendingBadge = `<span class="badge badge-pending">${getPendingLabel(item)}</span>`;
         }
     }
     
@@ -90,7 +132,7 @@ function createFeedCard(item, tabType) {
     if (cardType === "doc" || cardType === "reference") {
         const kwTags = item.keywords ? item.keywords.split(",").map(k => `<span class="tag">${escapeHtml(k.trim())}</span>`).join("") : "";
         const summaryText = isAnalysisPending 
-            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">AI 요약을 아직 생성하지 않았습니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 설명]<br>${escapeHtml(item.summary)}</p>`
             : `<p>${escapeHtml(item.summary)}</p>`;
             
         collapsibleHtml = `
@@ -107,7 +149,7 @@ function createFeedCard(item, tabType) {
     } else {
         // Trend
         const summaryText = isAnalysisPending 
-            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">⚠️ AI 분석 대기 중 (Gemini 한도 초과 또는 일시 오류). 백그라운드 재시도가 진행됩니다.</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 원문 본문]<br>${escapeHtml(item.summary)}</p>` 
+            ? `<div class="pending-notice" style="font-size: 11px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.05); border-left: 2px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px; color: #fca5a5;">${contentPending ? "원문을 확보하지 못해 요약하지 않았습니다." : "AI 요약을 아직 생성하지 않았습니다."}</div><p class="pending-desc" style="color: var(--text-muted); font-style: italic;">[수집 설명]<br>${escapeHtml(item.summary)}</p>`
             : `<p>${escapeHtml(item.summary)}</p>`;
             
         collapsibleHtml = `
@@ -130,9 +172,10 @@ function createFeedCard(item, tabType) {
         <div class="card-compact-header">
             <div class="card-compact-meta">
                 ${badgeHtml}
+                ${starReasonBadge}
                 ${pendingBadge}
             </div>
-            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" title="${starTitle}">★</button>
+            <button class="feed-star-btn ${starClass}" data-id="${item.id}" data-type="${itemType}" data-star-reason="${starReason}" data-manual-saved="${isManuallySaved ? "1" : "0"}" title="${starTitle}">★</button>
         </div>
         <a href="${escapeHtml(item.link)}" target="_blank" class="card-compact-title">${escapeHtml(item.title)}</a>
         <div class="card-compact-dates">
@@ -140,9 +183,10 @@ function createFeedCard(item, tabType) {
         </div>
         <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
             <button class="summary-toggle-btn">📄 AI 요약 보기</button>
-            ${isAnalysisPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
+            ${isAnalysisPending && !contentPending ? `<button class="selected-summary-btn" data-id="${item.id}" data-type="${itemType}">AI 요약 생성</button>` : ""}
         </div>
         ${collapsibleHtml}
+        ${editorActionsHtml}
     `;
     
     return card;
@@ -169,7 +213,8 @@ const DOM = {
     
     // Starred
     starredSearch: document.getElementById("starred-search"),
-    starredFilterBtns: document.querySelectorAll("#starred-tab .filter-btn"),
+    starredFilterBtns: document.querySelectorAll("#starred-feed-filters .filter-btn"),
+    starredReasonFilterBtns: document.querySelectorAll("#starred-reason-filters .filter-btn"),
     starredItemsGrid: document.getElementById("starred-items-grid"),
     starredEmpty: document.getElementById("starred-empty"),
     compileStarredReportBtn: document.getElementById("compile-starred-report-btn"),
@@ -252,6 +297,7 @@ const DOM = {
     autoScanState: document.getElementById("auto-scan-state"),
     autoScanNext: document.getElementById("auto-scan-next"),
     autoScanLatest: document.getElementById("auto-scan-latest"),
+    contentPipelineState: document.getElementById("content-pipeline-state"),
     terminalOutputBody: document.getElementById("terminal-output-body"),
     clearLogsBtn: document.getElementById("clear-logs-btn"),
     
@@ -293,7 +339,13 @@ const DOM = {
     statMostActiveCompetitor: document.getElementById("stat-most-active-competitor"),
     statTopKeyword: document.getElementById("stat-top-keyword"),
     statStarredSignals: document.getElementById("stat-starred-signals"),
+    generateInsightCandidatesBtn: document.getElementById("generate-insight-candidates-btn"),
+    summarizeReviewQueueBtn: document.getElementById("summarize-review-queue-btn"),
+    refineReviewQueueBtn: document.getElementById("refine-review-queue-btn"),
+    insightCandidateStatus: document.getElementById("insight-candidate-status"),
+    insightCandidateBuckets: document.getElementById("insight-candidate-buckets"),
     retrySummaryBtn: document.getElementById("retry-summary-btn"),
+    contentPipelineWarning: document.getElementById("content-pipeline-warning"),
 };
 
 // --- Initialization ---
@@ -341,6 +393,8 @@ function setupTabNavigation() {
                 loadReports();
             } else if (tabId === "board") {
                 loadBoardPosts();
+            } else if (tabId === "candidate-review") {
+                loadInsightCandidates();
             } else if (tabId === "dashboard-competitor" || tabId === "dashboard-trend") {
                 loadDashboardStats();
             }
@@ -391,6 +445,15 @@ function setupEventListeners() {
     DOM.saveSettingsBtn.addEventListener("click", handleSaveSettings);
     if (DOM.sidebarAutoScanToggle) {
         DOM.sidebarAutoScanToggle.addEventListener("click", handleSidebarAutoScanToggle);
+    }
+    if (DOM.generateInsightCandidatesBtn) {
+        DOM.generateInsightCandidatesBtn.addEventListener("click", handleGenerateInsightCandidates);
+    }
+    if (DOM.summarizeReviewQueueBtn) {
+        DOM.summarizeReviewQueueBtn.addEventListener("click", handleSummarizeReviewQueue);
+    }
+    if (DOM.refineReviewQueueBtn) {
+        DOM.refineReviewQueueBtn.addEventListener("click", handleRefineReviewQueue);
     }
     
     // Delete Profile
@@ -526,6 +589,14 @@ function setupEventListeners() {
     DOM.starredFilterBtns.forEach(btn => {
         btn.addEventListener("click", () => {
             DOM.starredFilterBtns.forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            loadStarredFeeds();
+        });
+    });
+
+    DOM.starredReasonFilterBtns.forEach(btn => {
+        btn.addEventListener("click", () => {
+            DOM.starredReasonFilterBtns.forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
             loadStarredFeeds();
         });
@@ -917,6 +988,8 @@ function onProfileChanged() {
         loadStarredFeeds();
     } else if (activeTab === "reports") {
         loadReports();
+    } else if (activeTab === "candidate-review") {
+        loadInsightCandidates();
     } else if (activeTab === "dashboard-competitor" || activeTab === "dashboard-trend") {
         loadDashboardStats();
     }
@@ -1639,6 +1712,7 @@ async function handleSidebarAutoScanToggle() {
         if (res.ok) {
             const data = await res.json();
             updateAutoScanInfo(data.auto_scan);
+            updateContentPipelineWarning(data.content_pipeline);
         }
     } finally {
         DOM.sidebarAutoScanToggle.classList.remove("is-saving");
@@ -1883,7 +1957,8 @@ async function loadStarredFeeds() {
     if (!currentProfileId) return;
     
     const search = DOM.starredSearch.value.trim();
-    const activeFilter = document.querySelector("#starred-tab .filter-btn.active").getAttribute("data-filter");
+    const activeFilter = document.querySelector("#starred-feed-filters .filter-btn.active")?.getAttribute("data-filter") || "all";
+    const activeReasonFilter = document.querySelector("#starred-reason-filters .filter-btn.active")?.getAttribute("data-reason-filter") || "all";
     
     // Manage folder filter visibility and state
     const profile = profiles.find(p => p.id === currentProfileId);
@@ -1932,151 +2007,84 @@ async function loadStarredFeeds() {
         trends.forEach(t => items.push({ ...t, type: 'trend' }));
         
         items.sort((a, b) => getFeedSortTime(b) - getFeedSortTime(a));
+
+        if (activeReasonFilter !== "all") {
+            items = items.filter(item => getStarredReason(item) === activeReasonFilter);
+        }
         
         // Clear all column containers
-        const colComp = document.getElementById("starred-items-competitor");
-        const colRef = document.getElementById("starred-items-reference");
-        const colTrend = document.getElementById("starred-items-trend");
-        if (colComp) colComp.innerHTML = "";
-        if (colRef) colRef.innerHTML = "";
-        if (colTrend) colTrend.innerHTML = "";
+        const colWork = document.getElementById("starred-items-work");
+        const colLearning = document.getElementById("starred-items-learning");
+        const colManual = document.getElementById("starred-items-manual");
+        if (colWork) colWork.innerHTML = "";
+        if (colLearning) colLearning.innerHTML = "";
+        if (colManual) colManual.innerHTML = "";
         
         if (items.length === 0) {
             DOM.starredEmpty.style.display = "block";
             
             // Clear counts
-            const badgeComp = document.getElementById("starred-count-competitor");
-            const badgeRef = document.getElementById("starred-count-reference");
-            const badgeTrend = document.getElementById("starred-count-trend");
-            if (badgeComp) badgeComp.textContent = 0;
-            if (badgeRef) badgeRef.textContent = 0;
-            if (badgeTrend) badgeTrend.textContent = 0;
+            const badgeWork = document.getElementById("starred-count-work");
+            const badgeLearning = document.getElementById("starred-count-learning");
+            const badgeManual = document.getElementById("starred-count-manual");
+            if (badgeWork) badgeWork.textContent = 0;
+            if (badgeLearning) badgeLearning.textContent = 0;
+            if (badgeManual) badgeManual.textContent = 0;
             return;
         }
         
         DOM.starredEmpty.style.display = "none";
         
-        let compCount = 0;
-        let refCount = 0;
-        let trendCount = 0;
+        let workCount = 0;
+        let learningCount = 0;
+        let manualCount = 0;
         
-        const groupByFolder = activeFilter === "trends" && DOM.starredGroupByFolder && DOM.starredGroupByFolder.checked;
-        
-        if (groupByFolder) {
-            // Group trend items by folder
-            const groups = {};
-            items.forEach(item => {
-                let cardType = item.type;
-                if (item.type === "doc" && item.doc_type === "reference") {
-                    cardType = "reference";
-                }
-                
-                if (cardType === "trend") {
-                    const folder = item.folder || "미분류";
-                    if (!groups[folder]) {
-                        groups[folder] = [];
-                    }
-                    groups[folder].push(item);
-                    trendCount++;
-                } else if (cardType === "doc") {
-                    if (colComp) {
-                        const card = createFeedCard(item, "starred");
-                        colComp.appendChild(card);
-                        compCount++;
-                    }
-                } else if (cardType === "reference") {
-                    if (colRef) {
-                        const card = createFeedCard(item, "starred");
-                        colRef.appendChild(card);
-                        refCount++;
-                    }
-                }
-            });
+        items.forEach(item => {
+            const card = createFeedCard(item, "starred");
+            const reason = getStarredReason(item);
             
-            const folderNames = Object.keys(groups).sort((a, b) => {
-                if (a === "미분류") return 1;
-                if (b === "미분류") return -1;
-                return a.localeCompare(b);
-            });
-            
-            folderNames.forEach(folderName => {
-                const groupItems = groups[folderName];
-                
-                const header = document.createElement("div");
-                header.className = "feed-group-section-header";
-                header.innerHTML = `
-                    <span class="folder-icon">📁</span>
-                    <span>${escapeHtml(folderName)}</span>
-                    <span class="folder-count">(${groupItems.length})</span>
-                `;
-                if (colTrend) colTrend.appendChild(header);
-                
-                groupItems.forEach(item => {
-                    const card = createFeedCard(item, "starred");
-                    if (colTrend) colTrend.appendChild(card);
-                });
-            });
-        } else {
-            // Normal 3-column chronological distribution
-            items.forEach(item => {
-                const card = createFeedCard(item, "starred");
-                
-                let cardType = item.type;
-                if (item.type === "doc" && item.doc_type === "reference") {
-                    cardType = "reference";
-                }
-                
-                if (cardType === "doc") {
-                    if (colComp) {
-                        colComp.appendChild(card);
-                        compCount++;
-                    }
-                } else if (cardType === "reference") {
-                    if (colRef) {
-                        colRef.appendChild(card);
-                        refCount++;
-                    }
-                } else {
-                    if (colTrend) {
-                        colTrend.appendChild(card);
-                        trendCount++;
-                    }
-                }
-            });
-        }
+            if (reason === "work_signal") {
+                if (colWork) colWork.appendChild(card);
+                workCount++;
+            } else if (reason === "learning_signal") {
+                if (colLearning) colLearning.appendChild(card);
+                learningCount++;
+            } else {
+                if (colManual) colManual.appendChild(card);
+                manualCount++;
+            }
+        });
         
         // Update count badges
-        const badgeComp = document.getElementById("starred-count-competitor");
-        const badgeRef = document.getElementById("starred-count-reference");
-        const badgeTrend = document.getElementById("starred-count-trend");
-        if (badgeComp) badgeComp.textContent = compCount;
-        if (badgeRef) badgeRef.textContent = refCount;
-        if (badgeTrend) badgeTrend.textContent = trendCount;
+        const badgeWork = document.getElementById("starred-count-work");
+        const badgeLearning = document.getElementById("starred-count-learning");
+        const badgeManual = document.getElementById("starred-count-manual");
+        if (badgeWork) badgeWork.textContent = workCount;
+        if (badgeLearning) badgeLearning.textContent = learningCount;
+        if (badgeManual) badgeManual.textContent = manualCount;
         
-        // Apply hidden/expanded classes on column wrappers based on activeFilter
-        const wrapComp = document.getElementById("starred-col-competitor");
-        const wrapRef = document.getElementById("starred-col-reference");
-        const wrapTrend = document.getElementById("starred-col-trend");
+        // Apply hidden/expanded classes on column wrappers based on reason filter
+        const wrapWork = document.getElementById("starred-col-work");
+        const wrapLearning = document.getElementById("starred-col-learning");
+        const wrapManual = document.getElementById("starred-col-manual");
         
-        if (wrapComp && wrapRef && wrapTrend) {
-            wrapComp.className = "feed-column";
-            wrapRef.className = "feed-column";
-            wrapTrend.className = "feed-column";
+        if (wrapWork && wrapLearning && wrapManual) {
+            wrapWork.className = "feed-column";
+            wrapLearning.className = "feed-column";
+            wrapManual.className = "feed-column";
             
-            if (activeFilter === "all") {
-                // Keep default 3-column layout
-            } else if (activeFilter === "docs") {
-                wrapComp.classList.add("expanded-col");
-                wrapRef.classList.add("hidden-col");
-                wrapTrend.classList.add("hidden-col");
-            } else if (activeFilter === "references") {
-                wrapRef.classList.add("expanded-col");
-                wrapComp.classList.add("hidden-col");
-                wrapTrend.classList.add("hidden-col");
-            } else if (activeFilter === "trends") {
-                wrapTrend.classList.add("expanded-col");
-                wrapComp.classList.add("hidden-col");
-                wrapRef.classList.add("hidden-col");
+            if (activeReasonFilter === "work_signal") {
+                wrapWork.classList.add("expanded-col");
+                wrapLearning.classList.add("hidden-col");
+                wrapManual.classList.add("hidden-col");
+            } else if (activeReasonFilter === "learning_signal") {
+                wrapLearning.classList.add("expanded-col");
+                wrapWork.classList.add("hidden-col");
+                wrapManual.classList.add("hidden-col");
+            } else if (activeReasonFilter === "manual") {
+                wrapManual.classList.add("expanded-col");
+                wrapWork.classList.add("hidden-col");
+                wrapLearning.classList.add("hidden-col");
             }
         }
   
@@ -2089,10 +2097,12 @@ async function loadStarredFeeds() {
                 
                 const itemId = btn.getAttribute("data-id");
                 const itemType = btn.getAttribute("data-type");
+                const isManuallySaved = btn.getAttribute("data-manual-saved") === "1";
+                const nextSavedState = !isManuallySaved;
                 
                 try {
                     const endpoint = itemType === "doc" ? `/api/docs/${itemId}/star` : `/api/trends/${itemId}/star`;
-                    const res = await fetch(`${endpoint}?is_starred=false`, { method: "PUT" });
+                    const res = await fetch(`${endpoint}?is_starred=${nextSavedState}`, { method: "PUT" });
                     
                     if (res.ok) {
                         // Re-load starred feeds to refresh counts, grouping and display
@@ -2102,6 +2112,43 @@ async function loadStarredFeeds() {
                     }
                 } catch (err) {
                     console.error("Star toggle error:", err);
+                }
+            });
+        });
+        const judgmentBtns = DOM.starredItemsGrid.querySelectorAll(".starred-judgment-btn");
+        judgmentBtns.forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const itemId = btn.getAttribute("data-id");
+                const itemType = btn.getAttribute("data-type");
+                const label = btn.getAttribute("data-label");
+
+                try {
+                    const res = await fetch("/api/editor/judgments", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            profile_id: currentProfileId,
+                            item_type: itemType,
+                            item_id: Number(itemId),
+                            label,
+                            note: "중요 보관함에서 판단 수정"
+                        })
+                    });
+
+                    if (res.ok) {
+                        await loadStarredFeeds();
+                        await loadInsightCandidates();
+                        await loadDashboardStats();
+                    } else {
+                        const data = await res.json().catch(() => ({}));
+                        alert(data.detail || "판단 수정에 실패했습니다.");
+                    }
+                } catch (err) {
+                    console.error("Starred judgment error:", err);
+                    alert("판단 수정 중 오류가 발생했습니다.");
                 }
             });
         });
@@ -2388,6 +2435,7 @@ async function pollLogsLoop() {
             }
 
             updateAutoScanInfo(data.auto_scan);
+            updateContentPipelineWarning(data.content_pipeline);
             
             // 2. Stream logs only while the logs tab is visible. Large scans can produce
             // enough output to make other screens feel frozen if we re-render it every second.
@@ -2446,6 +2494,23 @@ function updateAutoScanInfo(info) {
         DOM.sidebarAutoScanToggle.classList.remove("is-off");
         DOM.sidebarAutoScanToggle.title = "자동 수집 끄기";
     }
+}
+
+function updateContentPipelineWarning(info) {
+    const warning = DOM.contentPipelineWarning;
+    if (DOM.contentPipelineState) {
+        DOM.contentPipelineState.textContent = info?.enabled
+            ? `본문 요약 ON · 회당 ${Number(info.limit || 0)}건 · 대기 ${Number(info.queued || 0)}건`
+            : "본문 요약 OFF";
+    }
+    if (!warning) return;
+    if (!info?.warning) {
+        warning.hidden = true;
+        warning.textContent = "";
+        return;
+    }
+    warning.textContent = `본문 확보 실패 ${Math.round(Number(info.failure_rate || 0) * 100)}% · 시스템 로그 확인`;
+    warning.hidden = false;
 }
 
 function updateRunStatus(status, label) {
@@ -2733,7 +2798,7 @@ async function loadGlobalTemplates() {
 function getTemplateDisplayName(id) {
     switch (id) {
         case "basic": return "[기본] 기술 신호 및 경쟁사 동향 보고서";
-        case "monthly": return "[월간] 솔루션전략팀 월간 전략 보고서";
+        case "monthly": return "[월간] 솔루션전략팀 전략 보고서";
         case "detailed": return "[상세] 경쟁사 기능 심층분석보고서";
         default: return id;
     }
@@ -2905,6 +2970,636 @@ async function loadDashboardStats() {
 
     } catch (e) {
         console.error("Error loading dashboard stats:", e);
+    }
+}
+
+async function handleGenerateInsightCandidates() {
+    if (!currentProfileId || !DOM.generateInsightCandidatesBtn) return;
+
+    DOM.generateInsightCandidatesBtn.setAttribute("disabled", "true");
+    DOM.generateInsightCandidatesBtn.textContent = "정리 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "최근 수집 항목을 신호 후보로 분류하고 있습니다.";
+    }
+
+    try {
+        const res = await fetch("/api/editor/reviews/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                limit: 80,
+                force: false
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "후보 정리에 실패했습니다.");
+        }
+        const data = await res.json();
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `${data.created || 0}개 항목을 새 후보로 정리했습니다.`;
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `후보 정리 실패: ${e.message}`;
+        }
+    } finally {
+        DOM.generateInsightCandidatesBtn.removeAttribute("disabled");
+        DOM.generateInsightCandidatesBtn.textContent = "AI 후보 정리";
+    }
+}
+
+async function loadInsightCandidates() {
+    if (!currentProfileId || !DOM.insightCandidateBuckets) return;
+
+    try {
+        const res = await fetch(`/api/editor/insights?profile_id=${currentProfileId}&limit_per_bucket=4&include_noise=true`);
+        if (!res.ok) throw new Error("신호 후보를 불러오지 못했습니다.");
+        const data = await res.json();
+        latestInsightCandidateData = data;
+        renderInsightCandidates(data);
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `신호 후보 로딩 실패: ${e.message}`;
+        }
+    }
+}
+
+function renderInsightCandidates(data) {
+    if (!DOM.insightCandidateBuckets) return;
+    const previousGemmaWorkbench = DOM.insightCandidateBuckets.querySelector(".gemma-review-workbench");
+    const openGemmaBuckets = new Set(
+        Array.from(DOM.insightCandidateBuckets.querySelectorAll(".gemma-review-bucket[open]"))
+            .map(bucket => bucket.getAttribute("data-bucket"))
+            .filter(Boolean)
+    );
+    const reviewQueue = (data?.buckets || []).find(bucket => bucket.bucket === "review_queue") || {
+        bucket: "review_queue",
+        label: "검토 대기",
+        total: 0,
+        items: [],
+    };
+    const noiseBucket = (data?.buckets || []).find(bucket => bucket.bucket === "noise") || {
+        bucket: "noise",
+        label: "노이즈",
+        total: 0,
+        items: [],
+    };
+    const pendingTotal = reviewQueue.total || 0;
+    const visibleCount = (reviewQueue.items || []).length;
+    const urlFoldedCount = reviewQueue.url_deduped_count || 0;
+    const eventFoldedCount = reviewQueue.event_grouped_count || 0;
+    const noiseTotal = noiseBucket.total || 0;
+    const gemmaReviewHtml = renderGemmaUnconfirmedReview(
+        data?.buckets || [],
+        openGemmaBuckets,
+        Boolean(previousGemmaWorkbench),
+    );
+
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = pendingTotal
+            ? `검토 대기 후보 ${pendingTotal}개가 있습니다. 지금 화면에는 우선 처리할 ${visibleCount}개를 보여줍니다.${urlFoldedCount ? ` 같은 원문 ${urlFoldedCount}개는 접었습니다.` : ""}${eventFoldedCount ? ` 같은 사건 반복 카드 ${eventFoldedCount}개도 묶었습니다.` : ""}`
+            : "처리할 검토 대기 후보가 없습니다. AI 후보 정리를 눌러 최근 수집 항목을 새로 올리세요.";
+    }
+
+    DOM.insightCandidateBuckets.innerHTML = `
+        ${gemmaReviewHtml}
+        <div class="insight-bucket review-workbench" data-bucket="${escapeHtml(reviewQueue.bucket)}">
+            <div class="insight-bucket-header">
+                <span class="insight-bucket-title">${escapeHtml(reviewQueue.label)}</span>
+                <span class="insight-bucket-count">${pendingTotal}개</span>
+            </div>
+            <div class="insight-card-list">
+                ${(reviewQueue.items || []).length ? reviewQueue.items.map(renderInsightCard).join("") : `<div class="insight-empty">처리할 후보가 없습니다. 확정한 업무 신호와 학습 신호는 대시보드와 원장에 계속 남습니다.</div>`}
+            </div>
+        </div>
+        <details class="insight-noise-monitor">
+            <summary>
+                <span>LLM 노이즈 처리 목록</span>
+                <strong>${noiseTotal}개</strong>
+            </summary>
+            <p>자동으로 낮춘 항목입니다. 삭제된 것이 아니며, 잘못 내려간 카드는 여기서 업무 신호나 학습 신호로 다시 끌어올릴 수 있습니다.</p>
+            <div class="insight-card-list compact">
+                ${(noiseBucket.items || []).length ? noiseBucket.items.map(renderInsightCard).join("") : `<div class="insight-empty">현재 확인할 노이즈 항목이 없습니다.</div>`}
+            </div>
+        </details>
+    `;
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-action-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightJudgment(btn));
+    });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightSummary(btn));
+    });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-summary-expand-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightSummaryExpand(btn));
+    });
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-refine-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleInsightRefine(btn));
+    });
+    setupInsightDragAndDrop();
+}
+
+function renderGemmaUnconfirmedReview(buckets, openBuckets = new Set(), preserveOpenState = false) {
+    const order = ["work_signal", "learning_signal", "noise", "review_queue"];
+    const labels = {
+        work_signal: "업무 신호",
+        learning_signal: "학습 신호",
+        noise: "노이즈",
+        review_queue: "판단 보류",
+    };
+    const descriptions = {
+        work_signal: "제안·전략·경쟁사 분석에 바로 쓸 가능성이 높은 Gemma 초안입니다.",
+        learning_signal: "기술 감각과 장기 지식 축적에 유용하다고 본 Gemma 초안입니다.",
+        noise: "재사용 가치가 낮다고 본 항목입니다. 잘못 내려간 것만 살려주세요.",
+        review_queue: "근거가 부족하거나 경계선이라 Gemma가 확정하지 않은 항목입니다.",
+    };
+    const byBucket = Object.fromEntries((buckets || []).map(bucket => [bucket.bucket, bucket]));
+    const total = order.reduce((sum, key) => sum + Number(byBucket[key]?.unconfirmed_total || 0), 0);
+    if (!total) return "";
+
+    const sections = order.map(key => {
+        const bucket = byBucket[key] || {};
+        const items = bucket.unconfirmed_items || [];
+        const count = Number(bucket.unconfirmed_total || 0);
+        const uniqueCount = Number(bucket.unconfirmed_unique_total || count);
+        const shouldOpen = preserveOpenState ? openBuckets.has(key) : key === "work_signal";
+        const openAttribute = shouldOpen ? " open" : "";
+        return `
+            <details class="gemma-review-bucket ${escapeHtml(key)}" data-bucket="${escapeHtml(key)}"${openAttribute}>
+                <summary>
+                    <span>${escapeHtml(labels[key])}</span>
+                    <strong>${count}건</strong>
+                    ${uniqueCount < count ? `<small>묶음 적용 후 ${uniqueCount}장</small>` : ""}
+                </summary>
+                <p>${escapeHtml(descriptions[key])}</p>
+                <div class="insight-card-list gemma-compact-grid">
+                    ${items.length ? items.map(item => renderInsightCard(item, { compact: true })).join("") : `<div class="insight-empty">현재 확인할 항목이 없습니다.</div>`}
+                </div>
+            </details>
+        `;
+    }).join("");
+
+    return `
+        <section class="gemma-review-workbench">
+            <div class="gemma-review-header">
+                <div>
+                    <span class="gemma-review-kicker">GEMMA REVIEW</span>
+                    <h3>Gemma 자동 분류 · 미확인</h3>
+                    <p>AI가 올린 초안 ${total}건입니다. 같은 버킷을 누르면 확정되고, 다른 버킷을 누르면 교정됩니다.</p>
+                </div>
+                <strong>${total}건</strong>
+            </div>
+            <div class="gemma-review-buckets">${sections}</div>
+        </section>
+    `;
+}
+
+function renderInsightCard(item, options = {}) {
+    const compact = Boolean(options.compact);
+    const source = item.source_name || item.category || "-";
+    const dateText = item.published_at
+        ? `발행 ${formatDate(item.published_at)}`
+        : `수집 ${formatDate(item.item_created_at || item.created_at)}`;
+    const tags = parseInsightTags(item.suggested_tags || item.secondary_buckets);
+    const keywordTags = parseInsightTags(item.matched_keywords || "").filter(tag => !tags.includes(tag));
+    const allTags = tags.concat(keywordTags).slice(0, compact ? 4 : 8);
+    const tagHtml = allTags.length
+        ? `<div class="insight-card-tags">${allTags.map(tag => `<span>${escapeHtml(formatInsightTag(tag))}</span>`).join("")}</div>`
+        : "";
+    const isSummaryPending = item.analysis_status === "pending";
+    const contentPending = item.item_type === "trend" && isContentPending(item);
+    const summaryText = getInsightSummaryText(item);
+    const canExpandSummary = (summaryText || "").length > 140;
+    const summaryHtml = `
+        <div class="insight-card-summary ${isSummaryPending ? "is-pending" : ""}">
+            <div class="insight-card-summary-label">${isSummaryPending ? "수집 설명" : "AI 요약"}</div>
+            <p>${escapeHtml(summaryText || "요약 내용이 아직 없습니다.")}</p>
+            ${canExpandSummary ? `<button class="insight-summary-expand-btn" type="button">더보기</button>` : ""}
+        </div>
+    `;
+    const summaryActionHtml = isSummaryPending && !contentPending
+        ? `<button class="insight-summary-btn" data-review-id="${item.id}" data-item-type="${item.item_type}" data-item-id="${item.item_id}">AI 요약 생성</button>`
+        : "";
+    const isPrecisionClassified = item.classification_source === "llm";
+    const sourceLabel = isPrecisionClassified ? "Gemma 자동 분류 · 미확인" : "규칙 분류";
+    const refineActionHtml = !isPrecisionClassified && item.primary_bucket === "review_queue"
+        ? `<button class="insight-refine-btn" data-review-id="${item.id}">정밀 분류</button>`
+        : "";
+    const actionLabels = isPrecisionClassified ? {
+        work_signal: item.primary_bucket === "work_signal" ? "업무 신호 확정" : "업무로 교정",
+        learning_signal: item.primary_bucket === "learning_signal" ? "학습 신호 확정" : "학습으로 교정",
+        noise: item.primary_bucket === "noise" ? "노이즈 확정" : "노이즈로 교정",
+    } : {
+        work_signal: "업무 신호",
+        learning_signal: "학습 신호",
+        noise: "노이즈",
+    };
+    const bucketLabels = {
+        work_signal: "업무 신호 초안",
+        learning_signal: "학습 신호 초안",
+        noise: "노이즈 초안",
+        review_queue: "판단 보류",
+    };
+    const metaHtml = `
+        <div class="insight-card-meta">
+            <span>${escapeHtml(source)}</span>
+            <span>${escapeHtml(dateText)}</span>
+            <span>${item.analysis_status === "pending" ? getPendingLabel(item) : "요약 완료"}</span>
+            <span class="${isPrecisionClassified ? "is-precision" : ""}">${sourceLabel}</span>
+            ${Number(item.dedupe_count || 1) > 1 ? `<span>같은 원문 ${Number(item.dedupe_count)}건 접음</span>` : ""}
+            ${Number(item.event_group_count || 1) > 1 ? `<span>같은 사건 ${Number(item.event_group_count)}건 묶음</span>` : ""}
+        </div>
+    `;
+    const detailHtml = compact ? `
+        <details class="insight-card-details">
+            <summary>AI 요약·분류 근거 보기</summary>
+            ${metaHtml}
+            ${summaryHtml}
+            ${renderInsightEventGroup(item)}
+            <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
+        </details>
+    ` : `
+        ${metaHtml}
+        ${summaryHtml}
+        ${renderInsightEventGroup(item)}
+        <p class="insight-card-reason">${escapeHtml(item.reason || "후보 이유가 아직 없습니다.")}</p>
+    `;
+    return `
+        <article class="insight-card ${compact ? "is-review-compact" : ""}" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">
+            <a class="insight-card-title" href="${escapeHtml(item.link || "#")}" target="_blank">${escapeHtml(item.title || "제목 없음")}</a>
+            ${compact ? `<div class="insight-compact-status"><span>${escapeHtml(bucketLabels[item.primary_bucket] || item.primary_bucket)}</span><strong>점수 ${Number(item.score || 0)} · 확신도 ${Number(item.confidence || 0)}</strong></div>` : ""}
+            ${tagHtml}
+            <div class="insight-card-score ${compact ? "is-compact-score" : ""}">
+                <span>점수 ${Number(item.score || 0)}</span>
+                <span>확신도 ${Number(item.confidence || 0)}</span>
+            </div>
+            <div class="insight-card-actions">
+                ${summaryActionHtml}
+                ${refineActionHtml}
+                <button class="insight-action-btn positive" data-move-bucket="work_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.work_signal}</button>
+                <button class="insight-action-btn learning" data-move-bucket="learning_signal" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.learning_signal}</button>
+                <button class="insight-action-btn noise" data-move-bucket="noise" data-review-id="${item.id}" data-current-bucket="${escapeHtml(item.primary_bucket)}">${actionLabels.noise}</button>
+            </div>
+            ${detailHtml}
+        </article>
+    `;
+}
+
+function renderInsightEventGroup(item) {
+    const members = Array.isArray(item.event_group_items) ? item.event_group_items : [];
+    if (Number(item.event_group_count || 1) <= 1 || members.length <= 1) return "";
+    const representativeId = Number(item.item_id || 0);
+    const links = members
+        .filter(member => Number(member.item_id || 0) !== representativeId)
+        .map(member => `
+            <li>
+                <a href="${escapeHtml(member.link || "#")}" target="_blank">${escapeHtml(member.title || "제목 없음")}</a>
+                <span>${escapeHtml(member.source_name || "-")}</span>
+            </li>
+        `).join("");
+    if (!links) return "";
+    return `
+        <details class="insight-event-group">
+            <summary>같은 사건 기사 ${Number(item.event_group_count)}건 펼쳐보기</summary>
+            <ul>${links}</ul>
+        </details>
+    `;
+}
+
+function handleInsightSummaryExpand(btn) {
+    const summary = btn.closest(".insight-card-summary");
+    if (!summary) return;
+    const isExpanded = summary.classList.toggle("is-expanded");
+    btn.textContent = isExpanded ? "접기" : "더보기";
+}
+
+function getInsightSummaryText(item) {
+    const raw = item.summary || "";
+    const withoutHtml = raw
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return withoutHtml || raw;
+}
+
+async function summarizeInsightItem(itemType, itemId) {
+    if (!currentProfileId || !itemType || !itemId) {
+        throw new Error("요약할 항목 정보가 부족합니다.");
+    }
+    const res = await fetch(`/api/summary/${itemType}/${itemId}?profile_id=${currentProfileId}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.detail || "AI 요약 생성에 실패했습니다.");
+    }
+    return data;
+}
+
+async function handleInsightSummary(btn) {
+    const itemType = btn.getAttribute("data-item-type");
+    const itemId = Number(btn.getAttribute("data-item-id"));
+    const originalText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = "요약 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "선택한 후보의 AI 요약을 생성하고 있습니다.";
+    }
+
+    try {
+        await summarizeInsightItem(itemType, itemId);
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "AI 요약이 생성되었습니다. 카드 내용을 다시 불러옵니다.";
+        }
+        await loadInsightCandidates();
+        await loadDashboardStats();
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `AI 요약 생성 실패: ${e.message}`;
+        }
+    }
+}
+
+async function handleSummarizeReviewQueue() {
+    if (!currentProfileId || !DOM.summarizeReviewQueueBtn) return;
+    const reviewQueue = (latestInsightCandidateData?.buckets || []).find(bucket => bucket.bucket === "review_queue");
+    const pendingItems = (reviewQueue?.items || [])
+        .filter(item => item.analysis_status === "pending")
+        .slice(0, 5);
+
+    if (!pendingItems.length) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "검토 대기 안에 AI 요약 대기 항목이 없습니다.";
+        }
+        return;
+    }
+
+    const btn = DOM.summarizeReviewQueueBtn;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+
+    let successCount = 0;
+    try {
+        for (let i = 0; i < pendingItems.length; i += 1) {
+            const item = pendingItems[i];
+            btn.textContent = `요약 중 ${i + 1}/${pendingItems.length}`;
+            if (DOM.insightCandidateStatus) {
+                DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${i + 1}/${pendingItems.length}개째 AI 요약을 생성하고 있습니다.`;
+            }
+            await summarizeInsightItem(item.item_type, item.item_id);
+            successCount += 1;
+        }
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `검토 대기 후보 ${successCount}개 요약을 생성했습니다.`;
+        }
+        await loadInsightCandidates();
+        await loadDashboardStats();
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `검토 대기 일괄 요약 중단: ${successCount}개 완료, 오류: ${e.message}`;
+        }
+        await loadInsightCandidates();
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+async function refineInsightReview(aiReviewId) {
+    if (!currentProfileId || !aiReviewId) {
+        throw new Error("정밀 분류할 후보 정보가 부족합니다.");
+    }
+    const res = await fetch("/api/editor/reviews/refine-ollama", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            profile_id: currentProfileId,
+            ai_review_id: aiReviewId
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.detail || "정밀 분류에 실패했습니다.");
+    }
+    return data;
+}
+
+async function handleInsightRefine(btn) {
+    const aiReviewId = Number(btn.getAttribute("data-review-id"));
+    const originalText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = "분류 중";
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "선택한 후보를 나중에 다시 쓸 가치 기준으로 정밀 분류하고 있습니다.";
+    }
+
+    try {
+        await refineInsightReview(aiReviewId);
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "정밀 분류가 완료되었습니다. 카드 위치와 이유를 다시 불러옵니다.";
+        }
+        await loadInsightCandidates();
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `정밀 분류 실패: ${e.message}`;
+        }
+    }
+}
+
+async function handleRefineReviewQueue() {
+    if (!currentProfileId || !DOM.refineReviewQueueBtn) return;
+    const btn = DOM.refineReviewQueueBtn;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "준비 확인 중";
+
+    try {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = "로컬 Gemma와 안전하게 분류할 수 있는 자료 수를 확인하고 있습니다.";
+        }
+        const res = await fetch("/api/editor/reviews/ollama-backfill", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                limit: 200,
+                execute: false
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+            throw new Error(data.detail || data.error || "Gemma 소급 준비 확인에 실패했습니다.");
+        }
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `Gemma 준비 완료: 분류 가능 ${data.eligible_count || 0}개 · 근거 부족 ${data.insufficient_count || 0}개 · 실제 소급은 실행하지 않았습니다.`;
+        }
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `Gemma 준비 확인 실패: ${e.message}`;
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function getRefinePriorityScore(item) {
+    const score = Number(item.score || 0);
+    const confidence = Number(item.confidence || 0);
+    const isSummaryComplete = item.analysis_status !== "pending" ? 18 : 0;
+    const isManualSaved = Number(item.manual_saved ?? item.is_starred ?? 0) === 1 ? 16 : 0;
+    const lowConfidenceBoost = Math.max(0, 80 - confidence) * 0.35;
+    const recentTime = getFeedSortTime({
+        published_at: item.published_at,
+        created_at: item.item_created_at || item.created_at
+    });
+    const recencyBoost = recentTime ? Math.min(14, Math.max(0, (recentTime - (Date.now() - 1000 * 60 * 60 * 24 * 14)) / (1000 * 60 * 60 * 24))) : 0;
+    return score + isSummaryComplete + isManualSaved + lowConfidenceBoost + recencyBoost;
+}
+
+function parseInsightTags(rawTags) {
+    if (!rawTags) return [];
+    return String(rawTags)
+        .split(",")
+        .map(tag => tag.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+}
+
+function formatInsightTag(tag) {
+    const labels = {
+        competitor: "경쟁사",
+        cloud_cmp: "클라우드/CMP",
+        finance: "금융권",
+        security_regulation: "보안/규제",
+        ai_automation: "AI/자동화",
+        public_policy: "공공/정책",
+        technical_reference: "기술 레퍼런스",
+        market_trend: "시장동향",
+        proposal_evidence: "제안근거",
+        product_hint: "제품 힌트",
+        report: "시장동향",
+        market_signal: "시장동향",
+        ai_security: "보안/규제",
+        core_banking: "금융권",
+        devops: "클라우드/CMP",
+        platform_engineering: "클라우드/CMP",
+        product_idea: "제품 힌트",
+        rfp_evidence: "제안근거",
+        regulation: "보안/규제",
+        regulation_policy: "보안/규제"
+    };
+    return labels[tag] || tag;
+}
+
+function setupInsightDragAndDrop() {
+    if (!DOM.insightCandidateBuckets) return;
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-card").forEach(card => {
+        card.addEventListener("dragstart", (e) => {
+            card.classList.add("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", card.getAttribute("data-review-id") || "");
+        });
+        card.addEventListener("dragend", () => {
+            card.classList.remove("is-dragging");
+            DOM.insightCandidateBuckets.querySelectorAll(".insight-bucket").forEach(bucket => {
+                bucket.classList.remove("is-drag-over");
+            });
+        });
+    });
+
+    DOM.insightCandidateBuckets.querySelectorAll(".insight-bucket").forEach(bucket => {
+        bucket.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            bucket.classList.add("is-drag-over");
+            e.dataTransfer.dropEffect = "move";
+        });
+        bucket.addEventListener("dragleave", (e) => {
+            if (!bucket.contains(e.relatedTarget)) {
+                bucket.classList.remove("is-drag-over");
+            }
+        });
+        bucket.addEventListener("drop", (e) => {
+            e.preventDefault();
+            bucket.classList.remove("is-drag-over");
+            const reviewId = Number(e.dataTransfer.getData("text/plain"));
+            const targetBucket = bucket.getAttribute("data-bucket");
+            const card = DOM.insightCandidateBuckets.querySelector(`.insight-card[data-review-id="${reviewId}"]`);
+            const currentBucket = card?.getAttribute("data-current-bucket");
+            if (!reviewId || !targetBucket || targetBucket === currentBucket) return;
+            handleInsightCardMove(reviewId, targetBucket, currentBucket);
+        });
+    });
+}
+
+async function handleInsightCardMove(aiReviewId, targetBucket, currentBucket) {
+    if (!currentProfileId) return;
+    if (DOM.insightCandidateStatus) {
+        DOM.insightCandidateStatus.textContent = "카테고리 이동을 저장하고 있습니다.";
+    }
+
+    try {
+        const res = await fetch("/api/editor/reviews/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                profile_id: currentProfileId,
+                ai_review_id: aiReviewId,
+                target_bucket: targetBucket,
+                note: `드래그 이동: ${currentBucket || "unknown"} -> ${targetBucket}`
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "카테고리 이동 저장 실패");
+        }
+        const data = await res.json();
+        await loadInsightCandidates();
+        if (DOM.insightCandidateStatus && Number(data.applied_count || 0) > 1) {
+            const skippedText = Number(data.skipped_count || 0) > 0 ? ` · 기존 판단 ${Number(data.skipped_count)}건 보존` : "";
+            DOM.insightCandidateStatus.textContent = `같은 사건 ${Number(data.applied_count)}건에 한 번에 적용했습니다${skippedText}.`;
+        }
+        return data;
+    } catch (e) {
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `카테고리 이동 실패: ${e.message}`;
+        }
+        return false;
+    }
+}
+
+async function handleInsightJudgment(btn) {
+    if (!currentProfileId) return;
+    const moveBucket = btn.getAttribute("data-move-bucket");
+    const aiReviewId = Number(btn.getAttribute("data-review-id"));
+    const currentBucket = btn.getAttribute("data-current-bucket");
+    if (!moveBucket || !aiReviewId) return;
+
+    btn.setAttribute("disabled", "true");
+    const originalText = btn.textContent;
+    btn.textContent = "저장";
+
+    try {
+        const saved = await handleInsightCardMove(aiReviewId, moveBucket, currentBucket);
+        if (!saved) {
+            btn.textContent = originalText;
+            btn.removeAttribute("disabled");
+        }
+    } catch (e) {
+        btn.textContent = originalText;
+        btn.removeAttribute("disabled");
+        if (DOM.insightCandidateStatus) {
+            DOM.insightCandidateStatus.textContent = `판정 저장 실패: ${e.message}`;
+        }
     }
 }
 

@@ -122,6 +122,53 @@ def init_db():
         template_content TEXT NOT NULL
     )
     """)
+
+    # 9. Create editor_judgments table for TWT v2 editor mode
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS editor_judgments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL,
+        ai_review_id INTEGER,
+        item_type TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+        FOREIGN KEY (ai_review_id) REFERENCES ai_editor_reviews(id) ON DELETE SET NULL,
+        UNIQUE(profile_id, item_type, item_id, label)
+    )
+    """)
+
+    # 10. Create ai_editor_reviews table for TWT v2 AI-first candidate classification
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_editor_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL,
+        item_type TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        primary_bucket TEXT NOT NULL,
+        secondary_buckets TEXT DEFAULT '',
+        suggested_tags TEXT DEFAULT '',
+        classification_source TEXT DEFAULT 'rule_based',
+        score INTEGER DEFAULT 0,
+        confidence INTEGER DEFAULT 0,
+        reason TEXT DEFAULT '',
+        related_theme TEXT DEFAULT '',
+        model_name TEXT DEFAULT 'rule-based-v1',
+        prompt_version TEXT DEFAULT 'rules-2026-06-24',
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_editor_reviews_one_active
+    ON ai_editor_reviews(profile_id, item_type, item_id)
+    WHERE is_active = 1
+    """)
     
     conn.commit()
     
@@ -136,12 +183,67 @@ def init_db():
         cursor.execute("ALTER TABLE profiles ADD COLUMN auto_scan_enabled INTEGER DEFAULT 1")
     if 'auto_report_enabled' not in columns:
         cursor.execute("ALTER TABLE profiles ADD COLUMN auto_report_enabled INTEGER DEFAULT 1")
+
+    # Alter editor_judgments table to connect user decisions with AI review versions
+    cursor.execute("PRAGMA table_info(editor_judgments)")
+    judgment_cols = [row['name'] for row in cursor.fetchall()]
+    if 'ai_review_id' not in judgment_cols:
+        cursor.execute("ALTER TABLE editor_judgments ADD COLUMN ai_review_id INTEGER")
+
+    # TWT v2.1: the dashboard uses 3 editorial columns; legacy five-bucket
+    # reviews are kept as card tags so existing learning data is not lost.
+    cursor.execute("PRAGMA table_info(ai_editor_reviews)")
+    ai_review_cols = [row['name'] for row in cursor.fetchall()]
+    if 'suggested_tags' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN suggested_tags TEXT DEFAULT ''")
+    if 'classification_source' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN classification_source TEXT DEFAULT 'rule_based'")
+    if 'event_group_key' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_key TEXT DEFAULT ''")
+    if 'event_group_score' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_score REAL DEFAULT 0")
+    if 'event_group_reason' not in ai_review_cols:
+        cursor.execute("ALTER TABLE ai_editor_reviews ADD COLUMN event_group_reason TEXT DEFAULT ''")
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET suggested_tags = CASE primary_bucket
+            WHEN 'strategy_report' THEN 'report'
+            WHEN 'watch_competitor' THEN 'competitor'
+            WHEN 'product_idea' THEN 'product_idea'
+            WHEN 'rfp_evidence' THEN 'rfp_evidence'
+            ELSE suggested_tags
+        END
+        WHERE COALESCE(suggested_tags, '') = ''
+          AND primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence')
+    """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET primary_bucket = CASE
+            WHEN primary_bucket = 'likely_noise' THEN 'noise'
+            WHEN primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 'review_queue'
+            ELSE primary_bucket
+        END
+        WHERE primary_bucket IN ('strategy_report', 'watch_competitor', 'product_idea', 'rfp_evidence', 'likely_noise')
+    """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET primary_bucket = 'work_signal'
+        WHERE primary_bucket = 'insight'
+    """)
+    cursor.execute("""
+        UPDATE ai_editor_reviews
+        SET reason = REPLACE(REPLACE(reason, '-> insight', '-> work_signal'), '인사이트', '업무 신호')
+        WHERE reason LIKE '%insight%' OR reason LIKE '%인사이트%'
+    """)
     
     # Alter scanned_docs table to add is_starred column if missing
     cursor.execute("PRAGMA table_info(scanned_docs)")
     doc_cols = [row['name'] for row in cursor.fetchall()]
     if 'is_starred' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN is_starred INTEGER DEFAULT 0")
+    if 'manual_saved' not in doc_cols:
+        cursor.execute("ALTER TABLE scanned_docs ADD COLUMN manual_saved INTEGER DEFAULT 0")
+        cursor.execute("UPDATE scanned_docs SET manual_saved = COALESCE(is_starred, 0)")
     if 'published_at' not in doc_cols:
         cursor.execute("ALTER TABLE scanned_docs ADD COLUMN published_at TEXT DEFAULT ''")
     if 'analysis_status' not in doc_cols:
@@ -156,6 +258,29 @@ def init_db():
     trend_cols = [row['name'] for row in cursor.fetchall()]
     if 'is_starred' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN is_starred INTEGER DEFAULT 0")
+    if 'manual_saved' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN manual_saved INTEGER DEFAULT 0")
+        cursor.execute("UPDATE scanned_trends SET manual_saved = COALESCE(is_starred, 0)")
+    if 'original_url' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN original_url TEXT DEFAULT ''")
+    if 'source_url' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN source_url TEXT DEFAULT ''")
+    if 'content_status' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_status TEXT DEFAULT 'not_attempted'")
+    if 'content_error' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_error TEXT DEFAULT ''")
+    if 'content_chars' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_chars INTEGER DEFAULT 0")
+    if 'content_extractor' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_extractor TEXT DEFAULT ''")
+    if 'content_resolver' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN content_resolver TEXT DEFAULT ''")
+    if 'summary_model' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN summary_model TEXT DEFAULT ''")
+    if 'summary_evidence' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN summary_evidence TEXT DEFAULT '[]'")
+    if 'matched_keywords' not in trend_cols:
+        cursor.execute("ALTER TABLE scanned_trends ADD COLUMN matched_keywords TEXT DEFAULT ''")
     if 'published_at' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN published_at TEXT DEFAULT ''")
     if 'analysis_status' not in trend_cols:
@@ -164,6 +289,57 @@ def init_db():
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN analysis_error TEXT DEFAULT ''")
     if 'retry_count' not in trend_cols:
         cursor.execute("ALTER TABLE scanned_trends ADD COLUMN retry_count INTEGER DEFAULT 0")
+
+    # Keep legacy is_starred compatible with the archive view.
+    # Manual saves and confirmed work/learning signals are archive-visible.
+    cursor.execute("""
+        UPDATE scanned_docs
+        SET is_starred = 1
+        WHERE COALESCE(manual_saved, 0) = 1
+           OR id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'doc'
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+        )
+    """)
+    cursor.execute("""
+        UPDATE scanned_trends
+        SET is_starred = 1
+        WHERE COALESCE(manual_saved, 0) = 1
+           OR id IN (
+            SELECT item_id
+            FROM ai_editor_reviews
+            WHERE item_type = 'trend'
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+        )
+    """)
+    cursor.execute("""
+        UPDATE scanned_docs
+        SET is_starred = 0
+        WHERE COALESCE(manual_saved, 0) = 0
+          AND id NOT IN (
+              SELECT item_id
+              FROM ai_editor_reviews
+              WHERE item_type = 'doc'
+                AND is_active = 1
+                AND primary_bucket IN ('work_signal', 'learning_signal')
+          )
+    """)
+    cursor.execute("""
+        UPDATE scanned_trends
+        SET is_starred = 0
+        WHERE COALESCE(manual_saved, 0) = 0
+          AND id NOT IN (
+              SELECT item_id
+              FROM ai_editor_reviews
+              WHERE item_type = 'trend'
+                AND is_active = 1
+                AND primary_bucket IN ('work_signal', 'learning_signal')
+          )
+    """)
         
     # Alter profile_keywords table to add folder column if missing
     cursor.execute("PRAGMA table_info(profile_keywords)")
@@ -252,7 +428,7 @@ Please structure the report exactly as follows:
 
 Make the formatting clean and highly readable for Markdown."""),
         
-        ("monthly", "[월간] 솔루션전략팀 월간 전략 보고서",
+        ("monthly", "[월간] 솔루션전략팀 전략 보고서",
          """You are writing a monthly strategic intelligence report for the 솔루션전략팀.
 Analyze collected competitor updates and technology news to explain what is changing in the market and what it means for our solution strategy.
 
@@ -278,7 +454,7 @@ Rules:
 {trends_context}
 
 Please structure the report exactly as follows:
-# 솔루션전략팀 월간 전략 보고서 ({current_date})
+# 솔루션전략팀 전략 보고서 ({current_date})
 
 ## 1. 전략적 핵심 요약
 - 이번 달 기술 시장과 경쟁사 움직임의 핵심 결론을 5개 이내로 정리합니다.
@@ -535,14 +711,296 @@ def get_scanned_trend_titles(profile_id: int) -> List[str]:
     conn.close()
     return [r['title'] for r in rows]
 
-def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, summary: str, source: str, published_at: str = "", analysis_status: str = "complete", analysis_error: str = "") -> bool:
+def _merge_keyword_text(existing: str, keyword: str) -> str:
+    values = [value.strip() for value in (existing or "").split(",") if value.strip()]
+    if keyword and keyword not in values:
+        values.append(keyword)
+    return ",".join(values)
+
+def _split_keyword_text(text: str) -> List[str]:
+    return [value.strip() for value in (text or "").split(",") if value.strip()]
+
+def _candidate_dedupe_key(item: Dict[str, Any]) -> str:
+    item_type = item.get("item_type") or "item"
+    url = (
+        item.get("original_url")
+        or item.get("source_url")
+        or item.get("link")
+        or ""
+    ).strip()
+    if url:
+        return f"{item_type}:url:{url}"
+    return f"{item_type}:id:{item.get('item_id') or item.get('id')}"
+
+def _dedupe_candidate_items(items: List[Dict[str, Any]], limit: int) -> tuple[List[Dict[str, Any]], int]:
+    """Fold duplicate candidate cards that point to the same source item URL.
+
+    We keep the database ledger untouched. This only makes the candidate board
+    easier to review when the same article was collected under multiple search
+    keywords before URL-level trend merging was added.
+    """
+    deduped: List[Dict[str, Any]] = []
+    by_key: Dict[str, int] = {}
+    for item in items:
+        key = _candidate_dedupe_key(item)
+        keywords = []
+        keywords.extend(_split_keyword_text(item.get("matched_keywords") or ""))
+        if item.get("category"):
+            keywords.append(item["category"])
+        if key in by_key:
+            existing = deduped[by_key[key]]
+            merged = existing.get("_keyword_set") or set(_split_keyword_text(existing.get("matched_keywords") or ""))
+            for keyword in keywords:
+                if keyword:
+                    merged.add(keyword)
+            existing["_keyword_set"] = merged
+            existing["matched_keywords"] = ",".join(sorted(merged))
+            existing["dedupe_count"] = int(existing.get("dedupe_count") or 1) + 1
+            existing["duplicate_review_ids"] = (
+                (existing.get("duplicate_review_ids") or [])
+                + [item.get("id")]
+            )
+            continue
+        copied = dict(item)
+        merged = set(keyword for keyword in keywords if keyword)
+        copied["_keyword_set"] = merged
+        if merged:
+            copied["matched_keywords"] = ",".join(sorted(merged))
+        copied["dedupe_count"] = 1
+        copied["duplicate_review_ids"] = []
+        by_key[key] = len(deduped)
+        deduped.append(copied)
+    for item in deduped:
+        item.pop("_keyword_set", None)
+    url_folded_count = sum(max(0, int(item.get("dedupe_count") or 1) - 1) for item in deduped)
+
+    # A second, deliberately conservative fold groups different URLs only when
+    # the offline summary comparison has been confirmed as the same event.
+    # Source rows and AI reviews remain untouched and every member is returned
+    # inside event_group_items so the UI can expand the bundle.
+    event_folded: List[Dict[str, Any]] = []
+    event_positions: Dict[str, int] = {}
+    event_folded_count = 0
+    for item in deduped:
+        event_key = (item.get("event_group_key") or "").strip()
+        if not event_key:
+            copied = dict(item)
+            copied["event_group_count"] = 1
+            copied["event_group_items"] = []
+            event_folded.append(copied)
+            continue
+
+        member = {
+            "id": item.get("id"),
+            "item_id": item.get("item_id"),
+            "title": item.get("title", ""),
+            "link": item.get("link", ""),
+            "source_name": item.get("source_name", ""),
+            "published_at": item.get("published_at", ""),
+            "summary": item.get("summary", ""),
+        }
+        if event_key not in event_positions:
+            copied = dict(item)
+            copied["event_group_count"] = 1
+            copied["event_group_items"] = [member]
+            event_positions[event_key] = len(event_folded)
+            event_folded.append(copied)
+            continue
+
+        position = event_positions[event_key]
+        existing = event_folded[position]
+        existing["event_group_count"] = int(existing.get("event_group_count") or 1) + 1
+        existing["event_group_items"].append(member)
+        event_folded_count += 1
+
+        # Prefer the item with the richest summary as the visible representative.
+        if len(item.get("summary") or "") > len(existing.get("summary") or ""):
+            preserved_members = existing["event_group_items"]
+            preserved_count = existing["event_group_count"]
+            replacement = dict(item)
+            replacement["event_group_items"] = preserved_members
+            replacement["event_group_count"] = preserved_count
+            event_folded[position] = replacement
+
+    return event_folded[:limit], url_folded_count + event_folded_count
+
+def find_scanned_trend_by_url(
+    profile_id: int,
+    link: str = "",
+    original_url: str = "",
+    source_url: str = "",
+    exclude_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    candidates = [value.strip() for value in (link, original_url, source_url) if value and value.strip()]
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        exclude_clause = " AND id != ?" if exclude_id is not None else ""
+        params = [profile_id] + candidates + candidates + candidates
+        if exclude_id is not None:
+            params.append(int(exclude_id))
+        cursor.execute(
+            f"""
+            SELECT * FROM scanned_trends
+            WHERE profile_id = ?
+              AND (link IN ({placeholders}) OR original_url IN ({placeholders}) OR source_url IN ({placeholders}))
+              {exclude_clause}
+            ORDER BY id ASC LIMIT 1
+            """,
+            params,
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def merge_scanned_trend_keyword(trend_id: int, keyword: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT keyword, matched_keywords FROM scanned_trends WHERE id = ?", (trend_id,))
+        row = cursor.fetchone()
+        if not row:
+            return
+        merged = _merge_keyword_text(row["matched_keywords"] or row["keyword"] or "", keyword)
+        cursor.execute("UPDATE scanned_trends SET matched_keywords = ? WHERE id = ?", (merged, trend_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_queued_trends(profile_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    """Return only new-article items explicitly deferred by the processing cap."""
+    limit = max(1, min(int(limit or 10), 500))
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            """INSERT INTO scanned_trends (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, keyword, title, link, summary, source, published_at, analysis_status, analysis_error)
+            """
+            SELECT *
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status = 'queued'
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (profile_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def update_scanned_trend_content(
+    trend_id: int,
+    *,
+    keyword: str,
+    title: str,
+    link: str,
+    summary: str,
+    source: str,
+    published_at: str = "",
+    analysis_status: str = "complete",
+    analysis_error: str = "",
+    original_url: str = "",
+    source_url: str = "",
+    content_status: str,
+    content_error: str = "",
+    content_chars: int = 0,
+    content_extractor: str = "",
+    content_resolver: str = "",
+    summary_model: str = "",
+    summary_evidence: Optional[List[str]] = None,
+) -> bool:
+    """Complete one queued trend in place without touching user/editor state."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT keyword, matched_keywords FROM scanned_trends WHERE id = ?", (trend_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        matched_keywords = _merge_keyword_text(row["matched_keywords"] or row["keyword"] or "", keyword)
+        cursor.execute(
+            """
+            UPDATE scanned_trends
+            SET keyword = ?, title = ?, link = ?, summary = ?, source = ?, published_at = ?,
+                analysis_status = ?, analysis_error = ?, original_url = ?, source_url = ?,
+                content_status = ?, content_error = ?, content_chars = ?, content_extractor = ?,
+                content_resolver = ?, summary_model = ?, summary_evidence = ?,
+                matched_keywords = ?
+            WHERE id = ?
+            """,
+            (
+                keyword, title, link, summary, source, published_at,
+                analysis_status, analysis_error, original_url, source_url,
+                content_status, content_error, int(content_chars or 0), content_extractor,
+                content_resolver, summary_model,
+                json.dumps(summary_evidence or [], ensure_ascii=False), matched_keywords, trend_id,
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def save_scanned_trend(
+    profile_id: int,
+    keyword: str,
+    title: str,
+    link: str,
+    summary: str,
+    source: str,
+    published_at: str = "",
+    analysis_status: str = "complete",
+    analysis_error: str = "",
+    original_url: str = "",
+    source_url: str = "",
+    content_status: str = "not_attempted",
+    content_error: str = "",
+    content_chars: int = 0,
+    content_extractor: str = "",
+    content_resolver: str = "",
+    summary_model: str = "",
+    summary_evidence: Optional[List[str]] = None,
+) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        candidates = [value.strip() for value in (link, original_url, source_url) if value and value.strip()]
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cursor.execute(
+                f"""
+                SELECT id, keyword, matched_keywords FROM scanned_trends
+                WHERE profile_id = ?
+                  AND (link IN ({placeholders}) OR original_url IN ({placeholders}) OR source_url IN ({placeholders}))
+                ORDER BY id ASC LIMIT 1
+                """,
+                [profile_id] + candidates + candidates + candidates,
+            )
+            duplicate = cursor.fetchone()
+            if duplicate:
+                merged = _merge_keyword_text(duplicate["matched_keywords"] or duplicate["keyword"] or "", keyword)
+                cursor.execute("UPDATE scanned_trends SET matched_keywords = ? WHERE id = ?", (merged, duplicate["id"]))
+                conn.commit()
+                return False
+        cursor.execute(
+            """INSERT INTO scanned_trends (
+                   profile_id, keyword, title, link, summary, source, published_at,
+                   analysis_status, analysis_error, original_url, source_url, content_status,
+                   content_error, content_chars, content_extractor, content_resolver, summary_model,
+                   summary_evidence, matched_keywords
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile_id, keyword, title, link, summary, source, published_at,
+                analysis_status, analysis_error, original_url, source_url, content_status,
+                content_error, int(content_chars or 0), content_extractor, content_resolver, summary_model,
+                json.dumps(summary_evidence or [], ensure_ascii=False), keyword,
+            )
         )
         conn.commit()
         return True
@@ -552,6 +1010,58 @@ def save_scanned_trend(profile_id: int, keyword: str, title: str, link: str, sum
     except Exception as e:
         print(f"[Database] Error saving trend: {e}")
         return False
+    finally:
+        conn.close()
+
+def get_trend_content_pipeline_stats(profile_id: int, hours: int = 24) -> Dict[str, Any]:
+    hours = max(1, min(int(hours or 24), 24 * 30))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT content_status, COUNT(*) AS count
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status != 'not_attempted'
+              AND created_at >= datetime('now', ?)
+            GROUP BY content_status
+            """,
+            (profile_id, f"-{hours} hours"),
+        )
+        counts = {row["content_status"]: int(row["count"] or 0) for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT COALESCE(NULLIF(content_resolver, ''), 'unresolved') AS resolver, COUNT(*) AS count
+            FROM scanned_trends
+            WHERE profile_id = ?
+              AND content_status != 'not_attempted'
+              AND created_at >= datetime('now', ?)
+            GROUP BY COALESCE(NULLIF(content_resolver, ''), 'unresolved')
+            """,
+            (profile_id, f"-{hours} hours"),
+        )
+        resolver_counts = {row["resolver"]: int(row["count"] or 0) for row in cursor.fetchall()}
+        queued = counts.get("queued", 0)
+        noise_filtered = counts.get("noise_filtered", 0)
+        duplicates = counts.get("duplicate", 0)
+        successes = counts.get("summarized", 0)
+        failures = sum(count for status, count in counts.items() if status.endswith("_failed"))
+        attempts = successes + failures
+        failure_rate = round(failures / attempts, 3) if attempts else 0.0
+        return {
+            "hours": hours,
+            "attempts": attempts,
+            "successes": successes,
+            "failures": failures,
+            "failure_rate": failure_rate,
+            "warning": attempts >= 5 and failure_rate >= 0.3,
+            "queued": queued,
+            "noise_filtered": noise_filtered,
+            "duplicates": duplicates,
+            "by_status": counts,
+            "by_resolver": resolver_counts,
+        }
     finally:
         conn.close()
 
@@ -633,7 +1143,7 @@ def increment_doc_retry(doc_id: int, error_msg: str):
     try:
         cursor.execute(
             """UPDATE scanned_docs
-               SET retry_count = retry_count + 1, analysis_error = ?
+               SET retry_count = retry_count + 1, analysis_status = 'pending', analysis_error = ?
                WHERE id = ?""",
             (error_msg, doc_id)
         )
@@ -647,7 +1157,7 @@ def increment_trend_retry(trend_id: int, error_msg: str):
     try:
         cursor.execute(
             """UPDATE scanned_trends
-               SET retry_count = retry_count + 1, analysis_error = ?
+               SET retry_count = retry_count + 1, analysis_status = 'pending', analysis_error = ?
                WHERE id = ?""",
             (error_msg, trend_id)
         )
@@ -691,27 +1201,46 @@ def reset_pending_retry_count(profile_id: int):
 def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False, match_mode: str = "any", doc_type: str = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    conditions = ["profile_id = ?"]
+    conditions = ["d.profile_id = ?"]
     params = [profile_id]
     if starred_only:
-        conditions.append("is_starred = 1")
+        conditions.append("(COALESCE(d.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))")
     if doc_type:
-        conditions.append("doc_type = ?")
+        conditions.append("d.doc_type = ?")
         params.append(doc_type)
     keywords = [k.strip() for k in search.split(",") if k.strip()]
     if keywords:
         keyword_clauses = []
         for keyword in keywords:
-            keyword_clauses.append("(title LIKE ? OR competitor LIKE ? OR summary LIKE ? OR keywords LIKE ?)")
+            keyword_clauses.append("(d.title LIKE ? OR d.competitor LIKE ? OR d.summary LIKE ? OR d.keywords LIKE ?)")
             like = f"%{keyword}%"
             params.extend([like, like, like, like])
         joiner = " AND " if match_mode == "all" else " OR "
         conditions.append("(" + joiner.join(keyword_clauses) + ")")
     params.extend([limit, offset])
     cursor.execute(
-        f"""SELECT * FROM scanned_docs
+        f"""SELECT d.*,
+                  COALESCE(d.manual_saved, 0) AS manual_saved,
+                  ar.primary_bucket AS editor_bucket,
+                  CASE
+                      WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
+                      WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                      WHEN COALESCE(d.manual_saved, 0) = 1 THEN 'manual'
+                      ELSE 'manual'
+                  END AS star_reason,
+                  CASE
+                      WHEN COALESCE(d.manual_saved, 0) = 1
+                           OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                      THEN 1 ELSE 0
+                  END AS archive_saved
+           FROM scanned_docs d
+           LEFT JOIN ai_editor_reviews ar
+             ON ar.profile_id = d.profile_id
+            AND ar.item_type = 'doc'
+            AND ar.item_id = d.id
+            AND ar.is_active = 1
            WHERE {' AND '.join(conditions)}
-           ORDER BY COALESCE(NULLIF(published_at, ''), created_at) DESC LIMIT ? OFFSET ?""",
+           ORDER BY COALESCE(NULLIF(d.published_at, ''), d.created_at) DESC LIMIT ? OFFSET ?""",
         params
     )
     rows = cursor.fetchall()
@@ -721,20 +1250,42 @@ def get_docs(profile_id: int, limit: int = 50, offset: int = 0, search: str = ""
 def get_trends(profile_id: int, limit: int = 50, offset: int = 0, search: str = "", starred_only: bool = False) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    star_cond = " AND is_starred = 1" if starred_only else ""
+    star_cond = " AND (COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))" if starred_only else ""
+    select_sql = """SELECT t.*,
+                           COALESCE(t.manual_saved, 0) AS manual_saved,
+                           k.folder,
+                           ar.primary_bucket AS editor_bucket,
+                           CASE
+                               WHEN ar.primary_bucket = 'work_signal' THEN 'work_signal'
+                               WHEN ar.primary_bucket = 'learning_signal' THEN 'learning_signal'
+                               WHEN COALESCE(t.manual_saved, 0) = 1 THEN 'manual'
+                               ELSE 'manual'
+                           END AS star_reason,
+                           CASE
+                               WHEN COALESCE(t.manual_saved, 0) = 1
+                                    OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                               THEN 1 ELSE 0
+                           END AS archive_saved
+                    FROM scanned_trends t
+                    LEFT JOIN profile_keywords k
+                      ON t.profile_id = k.profile_id
+                     AND t.keyword = k.keyword
+                    LEFT JOIN ai_editor_reviews ar
+                      ON ar.profile_id = t.profile_id
+                     AND ar.item_type = 'trend'
+                     AND ar.item_id = t.id
+                     AND ar.is_active = 1"""
     if search:
         query = f"%{search}%"
         cursor.execute(
-            f"""SELECT t.*, k.folder FROM scanned_trends t
-               LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+            f"""{select_sql}
                WHERE t.profile_id = ?{star_cond} AND (t.title LIKE ? OR t.keyword LIKE ? OR t.summary LIKE ? OR t.source LIKE ?) 
                ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ? OFFSET ?""",
             (profile_id, query, query, query, query, limit, offset)
         )
     else:
         cursor.execute(
-            f"""SELECT t.*, k.folder FROM scanned_trends t
-               LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+            f"""{select_sql}
                WHERE t.profile_id = ?{star_cond} ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ? OFFSET ?""",
             (profile_id, limit, offset)
         )
@@ -766,11 +1317,31 @@ def get_profile_stats(profile_id: int) -> Dict[str, Any]:
     total_trends = cursor.fetchone()[0]
     
     # 3. Total starred docs count
-    cursor.execute("SELECT COUNT(*) FROM scanned_docs WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM scanned_docs d
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = d.profile_id
+         AND ar.item_type = 'doc'
+         AND ar.item_id = d.id
+         AND ar.is_active = 1
+        WHERE d.profile_id = ?
+          AND (COALESCE(d.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))
+    """, (profile_id,))
     starred_docs = cursor.fetchone()[0]
     
     # 4. Total starred trends count
-    cursor.execute("SELECT COUNT(*) FROM scanned_trends WHERE profile_id = ? AND is_starred = 1", (profile_id,))
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM scanned_trends t
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = t.profile_id
+         AND ar.item_type = 'trend'
+         AND ar.item_id = t.id
+         AND ar.is_active = 1
+        WHERE t.profile_id = ?
+          AND (COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))
+    """, (profile_id,))
     starred_trends = cursor.fetchone()[0]
     
     # 5. Competitor stats (grouped by competitor, filtered by competitor doc_type)
@@ -1001,7 +1572,7 @@ def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool =
     conditions = ["t.profile_id = ?"]
     
     if starred_only:
-        conditions.append("t.is_starred = 1")
+        conditions.append("(COALESCE(t.manual_saved, 0) = 1 OR ar.primary_bucket IN ('work_signal', 'learning_signal'))")
     folders = [f.strip() for f in folder.split(",") if f.strip()]
     if folders:
         placeholders = ", ".join(["?"] * len(folders))
@@ -1021,6 +1592,11 @@ def get_trends_for_report(profile_id: int, limit: int = 50, starred_only: bool =
     query = f"""
         SELECT t.*, k.folder FROM scanned_trends t
         LEFT JOIN profile_keywords k ON t.profile_id = k.profile_id AND t.keyword = k.keyword
+        LEFT JOIN ai_editor_reviews ar
+          ON ar.profile_id = t.profile_id
+         AND ar.item_type = 'trend'
+         AND ar.item_id = t.id
+         AND ar.is_active = 1
         WHERE {' AND '.join(conditions)}
         ORDER BY COALESCE(NULLIF(t.published_at, ''), t.created_at) DESC LIMIT ?
     """
@@ -1187,16 +1763,1290 @@ def get_resolved_template_for_profile(profile_id: int) -> str:
 def toggle_doc_star(doc_id: int, is_starred: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (is_starred, doc_id))
+    cursor.execute("UPDATE scanned_docs SET manual_saved = ? WHERE id = ?", (is_starred, doc_id))
     conn.commit()
     conn.close()
+    refresh_item_archive_flag("doc", doc_id)
 
 def toggle_trend_star(trend_id: int, is_starred: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (is_starred, trend_id))
+    cursor.execute("UPDATE scanned_trends SET manual_saved = ? WHERE id = ?", (is_starred, trend_id))
     conn.commit()
     conn.close()
+    refresh_item_archive_flag("trend", trend_id)
+
+def refresh_item_archive_flag(item_type: str, item_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM ai_editor_reviews
+            WHERE item_type = ?
+              AND item_id = ?
+              AND is_active = 1
+              AND primary_bucket IN ('work_signal', 'learning_signal')
+            LIMIT 1
+            """,
+            (item_type, item_id)
+        )
+        has_editor_signal = cursor.fetchone() is not None
+        if item_type == "doc":
+            cursor.execute("SELECT COALESCE(manual_saved, 0) AS manual_saved FROM scanned_docs WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            archive_saved = 1 if (row and int(row["manual_saved"] or 0) == 1) or has_editor_signal else 0
+            cursor.execute("UPDATE scanned_docs SET is_starred = ? WHERE id = ?", (archive_saved, item_id))
+        elif item_type == "trend":
+            cursor.execute("SELECT COALESCE(manual_saved, 0) AS manual_saved FROM scanned_trends WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            archive_saved = 1 if (row and int(row["manual_saved"] or 0) == 1) or has_editor_signal else 0
+            cursor.execute("UPDATE scanned_trends SET is_starred = ? WHERE id = ?", (archive_saved, item_id))
+        else:
+            raise ValueError("item_type must be 'doc' or 'trend'")
+        conn.commit()
+    finally:
+        conn.close()
+
+def sync_starred_with_editor_label(item_type: str, item_id: int, label: str):
+    refresh_item_archive_flag(item_type, item_id)
+
+# --- TWT v2 EDITOR MODE FUNCTIONS ---
+
+EDITOR_LABELS = {
+    "important",
+    "work_signal",
+    "learning_signal",
+    "report_candidate",
+    "watch_competitor",
+    "product_idea",
+    "rfp_evidence",
+    "noise",
+    "later",
+}
+
+EDITOR_BUCKETS = {
+    "review_queue",
+    "work_signal",
+    "learning_signal",
+    "noise",
+}
+
+BUCKET_LABELS = {
+    "review_queue": "검토 대기",
+    "work_signal": "업무 신호",
+    "learning_signal": "학습 신호",
+    "noise": "노이즈",
+}
+
+SUGGESTED_TAG_LABELS = {
+    "competitor": "경쟁사",
+    "cloud_cmp": "클라우드/CMP",
+    "finance": "금융권",
+    "security_regulation": "보안/규제",
+    "ai_automation": "AI/자동화",
+    "public_policy": "공공/정책",
+    "technical_reference": "기술 레퍼런스",
+    "market_trend": "시장동향",
+    "proposal_evidence": "제안근거",
+    "product_hint": "제품 힌트",
+}
+
+FIXED_EDITOR_TAGS = set(SUGGESTED_TAG_LABELS.keys())
+
+LEGACY_TAG_MAP = {
+    "report": "market_trend",
+    "market_signal": "market_trend",
+    "ai_security": "security_regulation",
+    "core_banking": "finance",
+    "devops": "cloud_cmp",
+    "platform_engineering": "cloud_cmp",
+    "rfp_evidence": "proposal_evidence",
+    "product_idea": "product_hint",
+    "regulation": "security_regulation",
+    "regulation_policy": "security_regulation",
+}
+
+def normalize_editor_tags(tags: Any, limit: int = 4) -> List[str]:
+    if isinstance(tags, str):
+        raw_tags = [tag.strip() for tag in tags.split(",")]
+    elif isinstance(tags, list):
+        raw_tags = [str(tag).strip() for tag in tags]
+    else:
+        raw_tags = []
+
+    normalized = []
+    for tag in raw_tags:
+        if not tag:
+            continue
+        tag = LEGACY_TAG_MAP.get(tag, tag)
+        if tag not in FIXED_EDITOR_TAGS:
+            continue
+        if tag not in normalized:
+            normalized.append(tag)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+def save_editor_judgment(profile_id: int, item_type: str, item_id: int, label: str, note: str = "", ai_review_id: Optional[int] = None) -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    if label not in EDITOR_LABELS:
+        raise ValueError(f"Unsupported editor label: {label}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        if label in ("work_signal", "learning_signal", "noise"):
+            cursor.execute(
+                """
+                DELETE FROM editor_judgments
+                WHERE profile_id = ?
+                  AND item_type = ?
+                  AND item_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                """,
+                (profile_id, item_type, item_id)
+            )
+        cursor.execute(
+            """
+            INSERT INTO editor_judgments (profile_id, ai_review_id, item_type, item_id, label, note)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, item_type, item_id, label)
+            DO UPDATE SET ai_review_id = excluded.ai_review_id, note = excluded.note, updated_at = CURRENT_TIMESTAMP
+            """,
+            (profile_id, ai_review_id, item_type, item_id, label, note)
+        )
+        conn.commit()
+        cursor.execute(
+            """
+            SELECT * FROM editor_judgments
+            WHERE profile_id = ? AND item_type = ? AND item_id = ? AND label = ?
+            """,
+            (profile_id, item_type, item_id, label)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def update_active_editor_review_bucket_by_item(profile_id: int, item_type: str, item_id: int, target_bucket: str, note: str = "") -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE profile_id = ?
+              AND item_type = ?
+              AND item_id = ?
+              AND is_active = 1
+            LIMIT 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        review = cursor.fetchone()
+        if not review:
+            return {}
+
+        old_bucket = review["primary_bucket"]
+        move_note = note or f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 {BUCKET_LABELS.get(target_bucket, target_bucket)}로 수정"
+        reason = review["reason"] or ""
+        if old_bucket != target_bucket:
+            reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (target_bucket, reason, review["id"], profile_id)
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (review["id"],))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def classify_editor_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
+    title = (item.get("title") or "").lower()
+    category = (item.get("category") or "").lower()
+    source_name = (item.get("source_name") or "").lower()
+    summary = (item.get("summary") or "").lower()
+    haystack = " ".join([title, category, source_name, summary])
+
+    bucket = "review_queue"
+    score = 55
+    confidence = 56
+    theme = item.get("category") or item.get("source_name") or "기술 신호"
+    tags = []
+    reason = "최근 수집된 항목 중 편집장 검토가 필요한 후보로 올렸습니다."
+
+    noise_terms = [
+        "backstage", "music core", "concert", "golf", "travel", "sortir",
+        "연예", "공연", "콘서트", "음악방송", "스타★샷", "골프", "여행",
+        "카르네발", "재생에너지 투자",
+    ]
+    rfp_terms = ["금융", "은행", "증권", "보험", "망분리", "보안", "규제", "거버넌스", "ai보안", "차세대", "코어뱅킹"]
+    product_terms = ["developer experience", "개발자 생산성", "platform engineering", "플랫폼 엔지니어링", "idp", "devops", "devsecops", "gitops", "llmops", "rag"]
+    ai_terms = ["ai", "llm", "생성형", "에이전트", "자동화", "agent", "copilot"]
+    cloud_terms = ["cloud", "클라우드", "cmp", "kubernetes", "쿠버네티스", "container", "컨테이너"]
+    competitor_terms = ["github", "gitlab", "atlassian", "jira", "azure devops", "harness", "copilot"]
+    report_terms = ["전략", "시장", "트렌드", "전망", "도입", "확산", "가이드라인", "보고서"]
+
+    if any(term in haystack for term in noise_terms):
+        bucket = "noise"
+        score = 35
+        confidence = 62
+        reason = "등록 키워드와는 맞지만 기술/경쟁사 전략과 직접 관련이 낮아 보입니다."
+    else:
+        if any(term in haystack for term in rfp_terms):
+            tags.append("proposal_evidence")
+            tags.append("finance")
+            if "규제" in haystack or "가이드라인" in haystack:
+                tags.append("security_regulation")
+            if "공공" in haystack or "정부" in haystack or "조달" in haystack:
+                tags.append("public_policy")
+            if "보안" in haystack or "ai보안" in haystack:
+                tags.append("security_regulation")
+            score = max(score, 70)
+            confidence = max(confidence, 64)
+        if item.get("item_type") == "doc" and item.get("category") == "reference":
+            tags.append("technical_reference")
+            score = max(score, 66)
+            confidence = max(confidence, 63)
+        elif any(term in haystack for term in competitor_terms) or item.get("item_type") == "doc":
+            tags.append("competitor")
+            score = max(score, 66)
+            confidence = max(confidence, 63)
+        if any(term in haystack for term in product_terms):
+            if "platform engineering" in haystack or "플랫폼 엔지니어링" in haystack or "idp" in haystack:
+                tags.append("cloud_cmp")
+            elif "devops" in haystack or "gitops" in haystack or "devsecops" in haystack:
+                tags.append("cloud_cmp")
+            else:
+                tags.append("product_hint")
+            score = max(score, 64)
+            confidence = max(confidence, 61)
+        if any(term in haystack for term in ai_terms):
+            tags.append("ai_automation")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
+        if any(term in haystack for term in cloud_terms):
+            tags.append("cloud_cmp")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
+        if any(term in haystack for term in report_terms):
+            tags.append("market_trend")
+            score = max(score, 62)
+            confidence = max(confidence, 60)
+        if not tags:
+            tags.append("technical_reference")
+        tags = normalize_editor_tags(tags)
+
+        tag_names = [SUGGESTED_TAG_LABELS.get(tag, tag) for tag in tags]
+        reason = f"AI가 바로 확정하지 않고 검토 대기 후보로 올렸습니다. 참고 태그: {', '.join(tag_names)}."
+
+    if int(item.get("manual_saved", item.get("is_starred")) or 0) == 1:
+        score += 12
+        confidence += 6
+        reason += " 사용자가 수동 저장한 항목이라 우선순위를 높였습니다."
+    if item.get("analysis_status") == "pending":
+        reason += " 현재 AI 요약 대기 상태이므로 원문 확인 또는 요약 생성이 필요합니다."
+
+    score = max(0, min(score, 100))
+    confidence = max(0, min(confidence, 100))
+    return {
+        "primary_bucket": bucket,
+        "secondary_buckets": ",".join(tags),
+        "suggested_tags": ",".join(tags),
+        "score": score,
+        "confidence": confidence,
+        "reason": reason,
+        "related_theme": theme,
+        "model_name": "rule-based-v1",
+        "prompt_version": "rules-2026-06-24",
+        "classification_source": "rule_based",
+    }
+
+def save_ai_editor_review(profile_id: int, item_type: str, item_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
+    if item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    bucket = review.get("primary_bucket") or "review_queue"
+    if bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {bucket}")
+    tags = normalize_editor_tags(review.get("suggested_tags", review.get("secondary_buckets", "")))
+    tag_text = ",".join(tags)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE profile_id = ? AND item_type = ? AND item_id = ? AND is_active = 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        cursor.execute(
+            """
+            INSERT INTO ai_editor_reviews (
+                profile_id, item_type, item_id, primary_bucket, secondary_buckets, suggested_tags, classification_source,
+                score, confidence, reason, related_theme, model_name, prompt_version, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                profile_id,
+                item_type,
+                item_id,
+                bucket,
+                tag_text,
+                tag_text,
+                review.get("classification_source", "rule_based"),
+                int(review.get("score") or 0),
+                int(review.get("confidence") or 0),
+                review.get("reason", ""),
+                review.get("related_theme", ""),
+                review.get("model_name", "rule-based-v1"),
+                review.get("prompt_version", "rules-2026-06-24"),
+            )
+        )
+        review_id = cursor.lastrowid
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def move_ai_editor_review(profile_id: int, ai_review_id: int, target_bucket: str, note: str = "") -> Dict[str, Any]:
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id)
+        )
+        review = cursor.fetchone()
+        if not review:
+            raise ValueError("Active AI review not found.")
+
+        old_bucket = review["primary_bucket"]
+        move_note = note or f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 {BUCKET_LABELS.get(target_bucket, target_bucket)}로 이동"
+        reason = review["reason"] or ""
+        if old_bucket != target_bucket:
+            reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (target_bucket, reason, ai_review_id, profile_id)
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def move_ai_editor_review_group(
+    profile_id: int,
+    ai_review_id: int,
+    target_bucket: str,
+    note: str = "",
+) -> Dict[str, Any]:
+    """Apply one editorial click to every still-unjudged member of an event group.
+
+    Each source item keeps its own ai_editor_review and editor_judgment row for
+    later traceability. Existing user judgments and manually saved group members
+    are deliberately skipped rather than overwritten.
+    """
+    if target_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {target_bucket}")
+
+    label = {
+        "review_queue": "later",
+        "work_signal": "work_signal",
+        "learning_signal": "learning_signal",
+        "noise": "noise",
+    }[target_bucket]
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT * FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id),
+        )
+        representative = cursor.fetchone()
+        if not representative:
+            raise ValueError("Active AI review not found.")
+
+        event_key = (representative["event_group_key"] or "").strip()
+        if event_key:
+            cursor.execute(
+                """
+                SELECT ar.*,
+                       COALESCE(d.manual_saved, t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                LEFT JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                WHERE ar.profile_id = ? AND ar.is_active = 1
+                  AND ar.event_group_key = ?
+                  AND ar.primary_bucket = ?
+                ORDER BY ar.id
+                """,
+                (profile_id, event_key, representative["primary_bucket"]),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT ar.*,
+                       COALESCE(d.manual_saved, t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                LEFT JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+                """,
+                (ai_review_id, profile_id),
+            )
+        candidates = cursor.fetchall()
+
+        moved_reviews = []
+        judgments = []
+        skipped = []
+        is_group_move = bool(event_key and len(candidates) > 1)
+        for review in candidates:
+            if is_group_move and int(review["manual_saved"] or 0) == 1:
+                skipped.append({"ai_review_id": review["id"], "reason": "manual_saved"})
+                continue
+            cursor.execute(
+                """
+                SELECT 1 FROM editor_judgments
+                WHERE profile_id = ? AND item_type = ? AND item_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                LIMIT 1
+                """,
+                (profile_id, review["item_type"], review["item_id"]),
+            )
+            if is_group_move and cursor.fetchone():
+                skipped.append({"ai_review_id": review["id"], "reason": "existing_user_judgment"})
+                continue
+
+            old_bucket = review["primary_bucket"]
+            move_note = note or (
+                f"사용자가 {BUCKET_LABELS.get(old_bucket, old_bucket)}에서 "
+                f"{BUCKET_LABELS.get(target_bucket, target_bucket)}로 이동"
+            )
+            if is_group_move:
+                move_note = f"[같은 사건 묶음 일괄 판단] {move_note}"
+            reason = review["reason"] or ""
+            if old_bucket != target_bucket:
+                reason = f"{reason}\n[편집장 수정] {move_note}".strip()
+            cursor.execute(
+                """
+                UPDATE ai_editor_reviews
+                SET primary_bucket = ?, reason = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND profile_id = ? AND is_active = 1
+                """,
+                (target_bucket, reason, review["id"], profile_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO editor_judgments (profile_id, ai_review_id, item_type, item_id, label, note)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id, item_type, item_id, label)
+                DO UPDATE SET ai_review_id = excluded.ai_review_id,
+                              note = excluded.note,
+                              updated_at = CURRENT_TIMESTAMP
+                """,
+                (profile_id, review["id"], review["item_type"], review["item_id"], label, move_note),
+            )
+            judgment_id = cursor.lastrowid
+            archive_saved = 1 if target_bucket in ("work_signal", "learning_signal") else int(review["manual_saved"] or 0)
+            table_name = "scanned_docs" if review["item_type"] == "doc" else "scanned_trends"
+            cursor.execute(f"UPDATE {table_name} SET is_starred = ? WHERE id = ?", (archive_saved, review["item_id"]))
+            moved_reviews.append(dict(review))
+            judgments.append({
+                "id": judgment_id,
+                "ai_review_id": review["id"],
+                "item_type": review["item_type"],
+                "item_id": review["item_id"],
+                "label": label,
+            })
+
+        if not moved_reviews:
+            raise ValueError("묶음에서 새로 적용할 수 있는 미판정 항목이 없습니다.")
+        conn.commit()
+        return {
+            "review": {**dict(representative), "primary_bucket": target_bucket},
+            "reviews": moved_reviews,
+            "judgments": judgments,
+            "applied_count": len(moved_reviews),
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+            "event_group_key": event_key,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def has_user_editor_judgment(profile_id: int, item_type: str, item_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM editor_judgments
+            WHERE profile_id = ?
+              AND item_type = ?
+              AND item_id = ?
+              AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+            LIMIT 1
+            """,
+            (profile_id, item_type, item_id)
+        )
+        return cursor.fetchone() is not None
+    finally:
+        conn.close()
+
+def get_ai_editor_review_context(profile_id: int, ai_review_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT
+                ar.*,
+                d.title,
+                d.competitor AS source_name,
+                d.doc_type AS category,
+                d.link,
+                d.summary,
+                d.published_at,
+                d.created_at AS item_created_at,
+                d.analysis_status,
+                d.is_starred,
+                COALESCE(d.manual_saved, 0) AS manual_saved,
+                CASE
+                    WHEN COALESCE(d.manual_saved, 0) = 1
+                         OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                    THEN 1 ELSE 0
+                END AS archive_saved
+            FROM ai_editor_reviews ar
+            JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+            WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+
+            UNION ALL
+
+            SELECT
+                ar.*,
+                t.title,
+                t.source AS source_name,
+                t.keyword AS category,
+                t.link,
+                t.summary,
+                t.published_at,
+                t.created_at AS item_created_at,
+                t.analysis_status,
+                t.is_starred,
+                COALESCE(t.manual_saved, 0) AS manual_saved,
+                CASE
+                    WHEN COALESCE(t.manual_saved, 0) = 1
+                         OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                    THEN 1 ELSE 0
+                END AS archive_saved
+            FROM ai_editor_reviews ar
+            JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+            WHERE ar.id = ? AND ar.profile_id = ? AND ar.is_active = 1
+            """,
+            (ai_review_id, profile_id, ai_review_id, profile_id)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def update_ai_editor_review_classification(profile_id: int, ai_review_id: int, review: Dict[str, Any]) -> Dict[str, Any]:
+    bucket = review.get("primary_bucket") or "review_queue"
+    if bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {bucket}")
+    tags = normalize_editor_tags(review.get("suggested_tags", review.get("secondary_buckets", "")))
+    tag_text = ",".join(tags)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM ai_editor_reviews
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (ai_review_id, profile_id)
+        )
+        current = cursor.fetchone()
+        if not current:
+            raise ValueError("Active AI review not found.")
+        if has_user_editor_judgment(profile_id, current["item_type"], current["item_id"]):
+            raise ValueError("User judgment already exists. AI reclassification will not overwrite it.")
+
+        cursor.execute(
+            """
+            UPDATE ai_editor_reviews
+            SET primary_bucket = ?,
+                secondary_buckets = ?,
+                suggested_tags = ?,
+                classification_source = ?,
+                score = ?,
+                confidence = ?,
+                reason = ?,
+                related_theme = ?,
+                model_name = ?,
+                prompt_version = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND profile_id = ? AND is_active = 1
+            """,
+            (
+                bucket,
+                tag_text,
+                tag_text,
+                review.get("classification_source", "llm"),
+                int(review.get("score") or 0),
+                int(review.get("confidence") or 0),
+                review.get("reason", ""),
+                review.get("related_theme", ""),
+                review.get("model_name", "gemini"),
+                review.get("prompt_version", "reuse-value-v1"),
+                ai_review_id,
+                profile_id,
+            )
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM ai_editor_reviews WHERE id = ?", (ai_review_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def get_editor_refine_pilot_targets(profile_id: int, limit: int = 15, item_type: str = "trend") -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 15), 30))
+    if item_type not in ("doc", "trend", "all"):
+        raise ValueError("item_type must be 'doc', 'trend', or 'all'")
+
+    type_filter = "" if item_type == "all" else "AND ar.item_type = ?"
+    params: List[Any] = [profile_id]
+    if item_type != "all":
+        params.append(item_type)
+    params.append(limit)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            f"""
+            WITH judgmented AS (
+                SELECT DISTINCT profile_id, item_type, item_id
+                FROM editor_judgments
+                WHERE profile_id = ?
+                  AND label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+            ),
+            candidates AS (
+                SELECT
+                    ar.id AS ai_review_id,
+                    ar.item_type,
+                    ar.item_id,
+                    ar.primary_bucket,
+                    ar.classification_source,
+                    ar.score,
+                    ar.confidence,
+                    ar.reason,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    COALESCE(d.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+                LEFT JOIN judgmented j
+                  ON j.item_type = ar.item_type AND j.item_id = ar.item_id
+                WHERE ar.profile_id = ?
+                  AND ar.is_active = 1
+                  AND ar.primary_bucket = 'review_queue'
+                  AND ar.classification_source != 'llm'
+                  AND j.item_id IS NULL
+
+                UNION ALL
+
+                SELECT
+                    ar.id AS ai_review_id,
+                    ar.item_type,
+                    ar.item_id,
+                    ar.primary_bucket,
+                    ar.classification_source,
+                    ar.score,
+                    ar.confidence,
+                    ar.reason,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    COALESCE(t.manual_saved, 0) AS manual_saved
+                FROM ai_editor_reviews ar
+                JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+                LEFT JOIN judgmented j
+                  ON j.item_type = ar.item_type AND j.item_id = ar.item_id
+                WHERE ar.profile_id = ?
+                  AND ar.is_active = 1
+                  AND ar.primary_bucket = 'review_queue'
+                  AND ar.classification_source != 'llm'
+                  AND j.item_id IS NULL
+            )
+            SELECT *
+            FROM candidates ar
+            WHERE 1=1 {type_filter}
+            ORDER BY
+                CASE ar.item_type WHEN 'trend' THEN 1 ELSE 2 END,
+                ar.score DESC,
+                ar.confidence ASC,
+                ar.item_created_at DESC
+            LIMIT ?
+            """,
+            [profile_id, profile_id] + params
+        )
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_editor_ollama_backfill_candidates(
+    profile_id: int,
+    limit: int = 1000,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> List[Dict[str, Any]]:
+    """Returns unjudged raw items that can be previewed before an Ollama backfill."""
+    limit = max(1, min(int(limit or 1000), 2000))
+    if primary_bucket and primary_bucket not in EDITOR_BUCKETS:
+        raise ValueError(f"Unsupported editor bucket: {primary_bucket}")
+    if item_type and item_type not in ("doc", "trend"):
+        raise ValueError("item_type must be 'doc' or 'trend'")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT * FROM (
+                SELECT
+                    ar.id AS ai_review_id,
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    ar.primary_bucket AS existing_bucket,
+                    ar.classification_source,
+                    ar.suggested_tags,
+                    ar.event_group_key,
+                    ar.score,
+                    ar.confidence
+                FROM scanned_docs d
+                LEFT JOIN ai_editor_reviews ar
+                  ON ar.profile_id = d.profile_id
+                 AND ar.item_type = 'doc'
+                 AND ar.item_id = d.id
+                 AND ar.is_active = 1
+                WHERE d.profile_id = ?
+                  AND COALESCE(d.manual_saved, 0) = 0
+                  AND COALESCE(ar.classification_source, '') != 'llm'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM editor_judgments j
+                      WHERE j.profile_id = d.profile_id
+                        AND j.item_type = 'doc'
+                        AND j.item_id = d.id
+                  )
+
+                UNION ALL
+
+                SELECT
+                    ar.id AS ai_review_id,
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    ar.primary_bucket AS existing_bucket,
+                    ar.classification_source,
+                    ar.suggested_tags,
+                    ar.event_group_key,
+                    ar.score,
+                    ar.confidence
+                FROM scanned_trends t
+                LEFT JOIN ai_editor_reviews ar
+                  ON ar.profile_id = t.profile_id
+                 AND ar.item_type = 'trend'
+                 AND ar.item_id = t.id
+                 AND ar.is_active = 1
+                WHERE t.profile_id = ?
+                  AND COALESCE(t.manual_saved, 0) = 0
+                  AND COALESCE(ar.classification_source, '') != 'llm'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM editor_judgments j
+                      WHERE j.profile_id = t.profile_id
+                        AND j.item_type = 'trend'
+                        AND j.item_id = t.id
+                  )
+            ) candidates
+            WHERE (? = '' OR existing_bucket = ?)
+              AND (? = '' OR item_type = ?)
+            ORDER BY
+                CASE
+                    WHEN item_type = 'doc' AND category = 'reference' THEN 1
+                    WHEN item_type = 'doc' THEN 2
+                    ELSE 3
+                END,
+                COALESCE(NULLIF(published_at, ''), item_created_at) DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, primary_bucket, primary_bucket, item_type, item_type, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_items_for_ai_editor_review(profile_id: int, limit: int = 80, force: bool = False) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 80), 150))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        active_filter = "" if force else "AND ar.id IS NULL"
+        cursor.execute(
+            f"""
+            SELECT * FROM (
+                SELECT
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at,
+                    d.analysis_status,
+                    d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
+                    CASE
+                        WHEN COALESCE(d.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
+                FROM scanned_docs d
+                LEFT JOIN ai_editor_reviews ar
+                    ON ar.profile_id = d.profile_id
+                    AND ar.item_type = 'doc'
+                    AND ar.item_id = d.id
+                    AND ar.is_active = 1
+                WHERE d.profile_id = ? {active_filter}
+
+                UNION ALL
+
+                SELECT
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at,
+                    t.analysis_status,
+                    t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
+                    CASE
+                        WHEN COALESCE(t.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
+                FROM scanned_trends t
+                LEFT JOIN ai_editor_reviews ar
+                    ON ar.profile_id = t.profile_id
+                    AND ar.item_type = 'trend'
+                    AND ar.item_id = t.id
+                    AND ar.is_active = 1
+                WHERE t.profile_id = ? {active_filter}
+            )
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, limit)
+        )
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def generate_rule_based_ai_editor_reviews(profile_id: int, limit: int = 80, force: bool = False) -> List[Dict[str, Any]]:
+    items = get_items_for_ai_editor_review(profile_id, limit=limit, force=force)
+    reviews = []
+    for item in items:
+        review = classify_editor_candidate(item)
+        saved = save_ai_editor_review(profile_id, item["item_type"], item["item_id"], review)
+        saved["title"] = item.get("title", "")
+        saved["source_name"] = item.get("source_name", "")
+        saved["category"] = item.get("category", "")
+        reviews.append(saved)
+    return reviews
+
+def get_ai_insight_candidates(profile_id: int, limit_per_bucket: int = 8, include_noise: bool = True) -> Dict[str, Any]:
+    limit_per_bucket = max(1, min(int(limit_per_bucket or 8), 30))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        noise_filter = "" if include_noise else "AND ar.primary_bucket != 'noise'"
+        cursor.execute(
+            f"""
+            WITH active_reviews AS (
+                SELECT *
+                FROM ai_editor_reviews ar
+                WHERE ar.profile_id = ? AND ar.is_active = 1 {noise_filter}
+            ),
+            candidates AS (
+                SELECT
+                    ar.*,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    '' AS original_url,
+                    '' AS source_url,
+                    d.doc_type AS matched_keywords,
+                    d.summary,
+                    d.published_at,
+                    d.created_at AS item_created_at,
+                    d.analysis_status,
+                    d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
+                    CASE
+                        WHEN COALESCE(d.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
+                FROM active_reviews ar
+                JOIN scanned_docs d ON ar.item_type = 'doc' AND ar.item_id = d.id
+
+                UNION ALL
+
+                SELECT
+                    ar.*,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.original_url,
+                    t.source_url,
+                    t.matched_keywords,
+                    t.summary,
+                    t.published_at,
+                    t.created_at AS item_created_at,
+                    t.analysis_status,
+                    t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    EXISTS (
+                        SELECT 1 FROM editor_judgments j
+                        WHERE j.profile_id = ar.profile_id
+                          AND j.item_type = ar.item_type
+                          AND j.item_id = ar.item_id
+                          AND j.label IN ('important', 'work_signal', 'learning_signal', 'noise', 'later')
+                    ) AS has_user_judgment,
+                    CASE
+                        WHEN COALESCE(t.manual_saved, 0) = 1
+                             OR ar.primary_bucket IN ('work_signal', 'learning_signal')
+                        THEN 1 ELSE 0
+                    END AS archive_saved
+                FROM active_reviews ar
+                JOIN scanned_trends t ON ar.item_type = 'trend' AND ar.item_id = t.id
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY primary_bucket
+                        ORDER BY score DESC, confidence DESC, item_created_at DESC
+                    ) AS bucket_rank
+                FROM candidates
+            )
+            SELECT *
+            FROM ranked
+            ORDER BY
+                CASE primary_bucket
+                    WHEN 'review_queue' THEN 1
+                    WHEN 'work_signal' THEN 2
+                    WHEN 'learning_signal' THEN 3
+                    WHEN 'noise' THEN 4
+                    ELSE 9
+                END,
+                score DESC,
+                item_created_at DESC
+            """,
+            (profile_id,)
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        buckets = []
+        for bucket in ["review_queue", "work_signal", "learning_signal", "noise"]:
+            raw_items = [r for r in rows if r.get("primary_bucket") == bucket]
+            all_unique_items, folded_count = _dedupe_candidate_items(raw_items, len(raw_items) or limit_per_bucket)
+            unconfirmed_raw_items = [
+                item for item in raw_items
+                if item.get("classification_source") == "llm"
+                and int(item.get("has_user_judgment") or 0) == 0
+            ]
+            unconfirmed_unique_items, unconfirmed_folded_count = _dedupe_candidate_items(
+                unconfirmed_raw_items,
+                len(unconfirmed_raw_items) or limit_per_bucket,
+            )
+            event_grouped_count = sum(
+                max(0, int(item.get("event_group_count") or 1) - 1)
+                for item in all_unique_items
+            )
+            url_deduped_count = max(0, folded_count - event_grouped_count)
+            items = all_unique_items[:limit_per_bucket]
+            buckets.append({
+                "bucket": bucket,
+                "label": BUCKET_LABELS[bucket],
+                "count": len(items),
+                "items": items,
+                "total": len(all_unique_items),
+                "raw_total": len(raw_items),
+                "deduped_count": folded_count,
+                "url_deduped_count": url_deduped_count,
+                "event_grouped_count": event_grouped_count,
+                "unconfirmed_total": len(unconfirmed_raw_items),
+                "unconfirmed_unique_total": len(unconfirmed_unique_items),
+                "unconfirmed_folded_count": unconfirmed_folded_count,
+                # The ordinary candidate lanes stay deliberately short, but the
+                # Gemma review workbench must expose every unconfirmed decision.
+                # Event-group members are already folded into one representative,
+                # so this remains a bounded list without hiding review work.
+                "unconfirmed_items": unconfirmed_unique_items,
+            })
+        return {
+            "buckets": buckets,
+            "total_active_reviews": sum(bucket["raw_total"] for bucket in buckets),
+            "total_unique_reviews": sum(bucket["total"] for bucket in buckets),
+            "total_deduped_reviews": sum(bucket["deduped_count"] for bucket in buckets),
+        }
+    finally:
+        conn.close()
+
+def get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = False) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 30), 100))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        noise_filter = "" if include_noise else "WHERE COALESCE(has_noise, 0) = 0"
+        cursor.execute(
+            f"""
+            WITH judgment_summary AS (
+                SELECT
+                    item_type,
+                    item_id,
+                    GROUP_CONCAT(label) AS labels,
+                    MAX(updated_at) AS last_judged_at,
+                    MAX(CASE WHEN label = 'noise' THEN 1 ELSE 0 END) AS has_noise,
+                    MAX(CASE WHEN label IN ('important', 'work_signal', 'learning_signal', 'report_candidate', 'watch_competitor', 'product_idea', 'rfp_evidence') THEN 1 ELSE 0 END) AS has_positive
+                FROM editor_judgments
+                WHERE profile_id = ?
+                GROUP BY item_type, item_id
+            ),
+            candidates AS (
+                SELECT
+                    'doc' AS item_type,
+                    d.id AS item_id,
+                    d.profile_id,
+                    d.title,
+                    d.competitor AS source_name,
+                    d.doc_type AS category,
+                    d.link,
+                    d.summary,
+                    d.published_at,
+                    d.created_at,
+                    d.analysis_status,
+                    d.is_starred,
+                    COALESCE(d.manual_saved, 0) AS manual_saved,
+                    COALESCE(js.labels, '') AS labels,
+                    COALESCE(js.has_noise, 0) AS has_noise,
+                    COALESCE(js.has_positive, 0) AS has_positive,
+                    (
+                        CASE WHEN COALESCE(d.manual_saved, 0) = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN d.analysis_status = 'pending' THEN 12 ELSE 6 END +
+                        CASE WHEN d.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
+                        CASE WHEN d.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
+                        CASE WHEN COALESCE(js.has_positive, 0) = 1 THEN 25 ELSE 0 END
+                    ) AS editor_score
+                FROM scanned_docs d
+                LEFT JOIN judgment_summary js ON js.item_type = 'doc' AND js.item_id = d.id
+                WHERE d.profile_id = ?
+
+                UNION ALL
+
+                SELECT
+                    'trend' AS item_type,
+                    t.id AS item_id,
+                    t.profile_id,
+                    t.title,
+                    t.source AS source_name,
+                    t.keyword AS category,
+                    t.link,
+                    t.summary,
+                    t.published_at,
+                    t.created_at,
+                    t.analysis_status,
+                    t.is_starred,
+                    COALESCE(t.manual_saved, 0) AS manual_saved,
+                    COALESCE(js.labels, '') AS labels,
+                    COALESCE(js.has_noise, 0) AS has_noise,
+                    COALESCE(js.has_positive, 0) AS has_positive,
+                    (
+                        CASE WHEN COALESCE(t.manual_saved, 0) = 1 THEN 30 ELSE 0 END +
+                        CASE WHEN t.analysis_status = 'pending' THEN 12 ELSE 6 END +
+                        CASE WHEN t.created_at >= datetime('now', '-7 days') THEN 20 ELSE 0 END +
+                        CASE WHEN t.created_at >= datetime('now', '-2 days') THEN 15 ELSE 0 END +
+                        CASE WHEN COALESCE(js.has_positive, 0) = 1 THEN 25 ELSE 0 END
+                    ) AS editor_score
+                FROM scanned_trends t
+                LEFT JOIN judgment_summary js ON js.item_type = 'trend' AND js.item_id = t.id
+                WHERE t.profile_id = ?
+            )
+            SELECT * FROM candidates
+            {noise_filter}
+            ORDER BY editor_score DESC, created_at DESC
+            LIMIT ?
+            """,
+            (profile_id, profile_id, profile_id, limit)
+        )
+        rows = cursor.fetchall()
+        queue = []
+        for row in rows:
+            item = dict(row)
+            item["labels"] = [label for label in (item.get("labels") or "").split(",") if label]
+            queue.append(item)
+        return queue
+    finally:
+        conn.close()
+
+def get_editor_learning_summary(profile_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT label, COUNT(*) AS count
+            FROM editor_judgments
+            WHERE profile_id = ?
+            GROUP BY label
+            ORDER BY count DESC, label ASC
+            """,
+            (profile_id,)
+        )
+        labels = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT item_type, COUNT(*) AS count
+            FROM editor_judgments
+            WHERE profile_id = ?
+            GROUP BY item_type
+            ORDER BY item_type ASC
+            """,
+            (profile_id,)
+        )
+        item_types = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(
+            """
+            SELECT label, note, updated_at
+            FROM editor_judgments
+            WHERE profile_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 10
+            """,
+            (profile_id,)
+        )
+        recent = [dict(r) for r in cursor.fetchall()]
+        return {"labels": labels, "item_types": item_types, "recent": recent}
+    finally:
+        conn.close()
 
 def get_latest_collection_at(profile_id: int) -> Optional[str]:
     conn = get_db_connection()

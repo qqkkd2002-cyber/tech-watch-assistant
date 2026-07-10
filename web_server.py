@@ -3,10 +3,13 @@ import os
 import json
 import asyncio
 import platform
+import re
 import ssl
 import urllib.request
 import urllib.parse
-from datetime import datetime, timedelta
+from html import unescape
+from html.parser import HTMLParser
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
@@ -23,6 +26,7 @@ except ImportError:
     sys.exit(1)
 
 import database
+import trend_pipeline
 database.init_db()
 
 try:
@@ -45,10 +49,13 @@ app.add_middleware(
 # Global variables for background process management
 active_process = None
 active_logs: List[str] = []
+TREND_CONTENT_PIPELINE_ENABLED = os.environ.get("TWT_TREND_PIPELINE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TREND_CONTENT_PIPELINE_LIMIT = max(1, int(os.environ.get("TWT_TREND_PIPELINE_LIMIT", "10") or 10))
 scan_status = "idle"  # "idle" or "running"
 active_profile_id: Optional[int] = None
 auto_scheduler_task: Optional[asyncio.Task] = None
 last_auto_scan_attempts: Dict[int, datetime] = {}
+EDITOR_OLLAMA_MODEL = os.environ.get("EDITOR_OLLAMA_MODEL", "gemma4:latest")
 
 # Default Admin Passcode from config.json or fallback
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -92,6 +99,39 @@ class BoardPostPayload(BaseModel):
     title: str
     content: str
 
+class EditorJudgmentPayload(BaseModel):
+    profile_id: int
+    ai_review_id: Optional[int] = None
+    item_type: str
+    item_id: int
+    label: str
+    note: str = ""
+
+class EditorReviewGeneratePayload(BaseModel):
+    profile_id: int
+    limit: int = 80
+    force: bool = False
+
+class EditorReviewMovePayload(BaseModel):
+    profile_id: int
+    ai_review_id: int
+    target_bucket: str
+    note: str = ""
+
+class EditorReviewRefinePayload(BaseModel):
+    profile_id: int
+    ai_review_id: int
+
+class EditorReviewPilotPayload(BaseModel):
+    profile_id: int
+    limit: int = 15
+    item_type: str = "trend"
+
+class EditorOllamaBackfillPayload(BaseModel):
+    profile_id: int
+    limit: int = 200
+    execute: bool = False
+
 class KeywordSuggestionRequest(BaseModel):
     profile_id: int
     seed_keyword: str = ""
@@ -106,6 +146,8 @@ class FeedSuggestionRequest(BaseModel):
 
 def extract_json_object(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("AI가 빈 응답을 반환했습니다. 잠시 후 다시 시도하세요.")
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
@@ -211,7 +253,12 @@ def parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace(" ", "T"))
+        parsed = datetime.fromisoformat(value.replace(" ", "T"))
+        if parsed.tzinfo is None:
+            # SQLite CURRENT_TIMESTAMP is UTC. Convert it to a naive local
+            # datetime because the scheduler uses datetime.now().
+            parsed = parsed.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+        return parsed
     except Exception:
         return None
 
@@ -279,6 +326,687 @@ Respond ONLY as valid JSON with this schema:
         "summary": str(result.get("summary", "")).strip() or item.get("summary", ""),
         "source": str(result.get("source", "")).strip() or "News"
     }
+
+
+def summarize_trend_item_with_ollama(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Use the same evidence-preserving local pipeline as automatic trend collection."""
+    source_url = item.get("source_url") or item.get("link") or ""
+    if not source_url:
+        raise trend_pipeline.TrendPipelineError("resolve", "원문 URL이 없어 요약할 수 없습니다.")
+    return trend_pipeline.enrich_and_summarize_trend(
+        {
+            "title": item.get("title", ""),
+            "link": source_url,
+            "source": item.get("source", "") or "News",
+        },
+        item.get("keyword", ""),
+        model=EDITOR_OLLAMA_MODEL,
+    )
+
+def build_editor_profile_context(profile_id: int) -> str:
+    profile = database.get_profile_by_id(profile_id) or {}
+    keywords = database.get_profile_keywords(profile_id)
+    feeds = database.get_profile_feeds(profile_id)
+
+    keyword_lines = []
+    for keyword in keywords[:40]:
+        folder = keyword.get("folder") or "미분류"
+        keyword_lines.append(f"- [{folder}] {keyword.get('keyword', '')}")
+
+    competitor_lines = []
+    reference_lines = []
+    for feed in feeds[:30]:
+        name = feed.get("name") or "이름 없음"
+        feed_type = feed.get("feed_type") or "competitor"
+        if feed_type == "reference":
+            reference_lines.append(f"- {name}")
+        else:
+            competitor_lines.append(f"- {name}")
+
+    return "\n".join([
+        f"Profile name: {profile.get('name', '')}",
+        "Monitoring keywords and folders:",
+        "\n".join(keyword_lines) if keyword_lines else "- No keywords configured",
+        "Competitor/product feeds:",
+        "\n".join(competitor_lines) if competitor_lines else "- No competitor feeds configured",
+        "Reference/technology feeds:",
+        "\n".join(reference_lines) if reference_lines else "- No reference feeds configured",
+    ])
+
+class _EditorHTMLTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: List[str] = []
+
+    def handle_data(self, data: str) -> None:
+        if data.strip():
+            self.parts.append(data.strip())
+
+
+def clean_editor_evidence_text(value: str) -> str:
+    parser = _EditorHTMLTextExtractor()
+    try:
+        parser.feed(value or "")
+        text = " ".join(parser.parts)
+    except Exception:
+        text = value or ""
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def assess_editor_evidence(item: Dict[str, Any]) -> Dict[str, Any]:
+    raw_summary = str(item.get("summary", "") or "").strip()
+    cleaned_summary = clean_editor_evidence_text(raw_summary)
+    contains_html = bool(re.search(r"<[^>]+>", raw_summary))
+    minimum_length = 180 if contains_html else 120
+    sufficient = len(cleaned_summary) >= minimum_length
+    return {
+        "sufficient": sufficient,
+        "cleaned_summary": cleaned_summary,
+        "cleaned_length": len(cleaned_summary),
+        "minimum_length": minimum_length,
+        "contains_html": contains_html,
+    }
+
+
+def _supported_evidence_points(points: Any, evidence_text: str) -> List[str]:
+    if not isinstance(points, list):
+        return []
+    normalized_evidence = re.sub(r"[^0-9a-zA-Z가-힣]+", " ", evidence_text.lower())
+    supported: List[str] = []
+    stopwords = {"기사", "내용", "관련", "대한", "통해", "위한", "있습니다", "합니다", "시장", "전략", "기술"}
+    for raw_point in points[:3]:
+        point = re.sub(r"\s+", " ", str(raw_point or "")).strip()
+        tokens = [
+            token for token in re.sub(r"[^0-9a-zA-Z가-힣]+", " ", point.lower()).split()
+            if len(token) >= 2 and token not in stopwords
+        ]
+        matched = [token for token in tokens if token in normalized_evidence]
+        if len(matched) >= 2 or any(len(token) >= 7 for token in matched):
+            supported.append(point)
+    return supported
+
+
+def build_editor_classification_prompt(item: Dict[str, Any], profile_context: str = "") -> str:
+    fixed_tag_lines = "\n".join([
+        f"- {key}: {label}"
+        for key, label in database.SUGGESTED_TAG_LABELS.items()
+    ])
+    evidence = assess_editor_evidence(item)
+    summary_text = evidence["cleaned_summary"]
+    if len(summary_text) > 2600:
+        summary_text = summary_text[:2600].rstrip() + "..."
+
+    return f"""
+You are classifying one collected monitoring item for a Korean solution strategy team.
+
+Product identity:
+- This app is a pre-accumulation system, not primarily a report writer.
+- The core question is whether this item should be kept as reusable strategic material for future reports, upper-level planning, competitor analysis, proposal/RFP evidence, or technology strategy.
+- Noise should be demoted, not deleted, because the original item remains searchable in the collection ledger.
+
+Current user's monitoring context:
+{profile_context or "- No profile context available"}
+
+TROMBONE product lens (highest-priority relevance rule):
+- TROMBONE is not an AI product. It is a platform that standardizes software development, delivery, and operations while governing and auditing change.
+- Pure AI news (new foundation models, generic generative-AI adoption, or another company's AI use) is normally learning_signal, not work_signal.
+- AI becomes work_signal when it changes the software lifecycle or helps govern it: AI coding, code-generation controls, developer workflows, CI/CD, deployment automation, DevSecOps, platform engineering, SRE/AIOps, release/change governance, traceability, audit, or runtime policy.
+- DevOps, CI/CD, software-supply-chain security, deployment/change management, regulated delivery, and competing developer-platform products are work_signal when supported by concrete facts.
+- Developer-tool updates are not work_signal merely because they mention GitHub, Copilot, GitLab, or another tool. Treat minor UI/convenience features, repository/issue settings, simple desktop-app version updates, and billing/credit/policy changes as learning_signal or noise unless they materially change development, deployment, operations, governance, audit, or workflow control.
+- Keep developer-tool updates as work_signal when they affect CI/CD runners, deployment pipelines, release/change gates, security scanning enforcement, developer workflow automation, or AI agents integrated into the software lifecycle.
+- Financial-sector regulation combined with deployment controls, change governance, auditability, software supply chain, or secure developer workflows is a strong work_signal.
+- Finance combined only with generic AI adoption, talent training, events, or broad awareness is learning_signal or noise, not work_signal.
+
+Item:
+Type: {item.get('item_type', '')}
+Title: {item.get('title', '')}
+Source: {item.get('source_name', '')}
+Category/Keyword: {item.get('category', '')}
+Published at: {item.get('published_at', '')}
+Current summary/body:
+{summary_text}
+
+Allowed primary_bucket values:
+- work_signal: directly useful for the user's assigned product/work, monitored competitors/products, proposals, customer response, competitor comparison, or strategy documents
+- learning_signal: not directly tied to the user's current responsibility, but useful for technology literacy, strategic sense, or long-term knowledge growth
+- noise: likely not useful for later strategy/planning, even if it matched a keyword
+- review_queue: use only when there is not enough evidence to choose work_signal, learning_signal, or noise
+
+Allowed suggested_tags. Pick up to 4 from this fixed list only:
+{fixed_tag_lines}
+
+Rules:
+- Respond ONLY as valid JSON. Do not include markdown fences.
+- Classify by reusable value, not simple keyword match.
+- Use the profile context to judge whether the item is close to the user's actual work. If it is broadly educational but not close to the profile context, prefer learning_signal over work_signal.
+- Do not over-promote generic finance news, personnel articles, award articles, investment/funding articles, events, or unrelated keyword matches.
+- Use noise when the item lacks reusable strategy value, even if it mentions a monitored keyword.
+- Use work_signal only when the item would plausibly help a later strategy memo, proposal, product positioning, competitor comparison, or customer discussion.
+- Write a reason that cites concrete facts from this item, not a generic template.
+- score means reusable strategic value, 0-100.
+- confidence means confidence in the classification, 0-100.
+
+User-specific editorial standard:
+- This user applies a strict threshold to learning_signal. An item is not valuable merely because it mentions finance, AI, education, collaboration, or an industry trend.
+- Classify as noise when an item is mainly about recruitment, general talent training, education, awards, ceremonies, appointments, retirements, or general events, and lacks concrete product changes, technical mechanisms, regulatory requirements, adoption evidence, or reusable implications.
+- Classify as noise when it is merely interesting news rather than reusable knowledge that could provide meaningful evidence or reasoning in a future strategy document.
+- Classify as learning_signal only when the item contains transferable technical concepts, architecture, operating methods, governance principles, or meaningful market mechanisms that could improve a later strategic judgment. General awareness alone is insufficient.
+- Classify as work_signal only when the item directly supports the user's product strategy, competitor analysis, proposal, customer discussion, regulation response, or positioning with concrete reusable facts.
+- Monitoring keywords, category labels, and bracketed prefixes in the title are collection metadata. They are not evidence that the article itself is relevant. Judge the actual article content and ignore a misleading keyword match.
+- Do not use vague phrases such as "useful for understanding a broad trend" or "related to the user's keywords" as the sole reason for learning_signal. A signal reason must name at least one concrete reusable mechanism, fact, product change, adoption case, regulatory change, or operating method from the item.
+- If no such concrete detail can be named, use noise for generic event/announcement content. Use review_queue with confidence 65 or lower only when the item appears potentially important but the supplied title and summary are genuinely insufficient to decide.
+- Confidence is not a style choice. Use 90 or higher only when the supplied text directly proves a concrete product change, technical mechanism, regulatory requirement, measured adoption result, or reusable operating method. Generic relevance or keyword overlap must not receive high confidence as a positive signal.
+
+Strict negative calibration examples (normally noise, not learning_signal):
+- AI/IT job training, trainee recruitment, teacher-use surveys, seminars, forums, hackathons, awards, or talent programs without a reusable technical mechanism.
+- A museum partnership mentioning digitization, a real-estate project marketed as a "business platform", or an energy/SMR project collected under a software keyword.
+- A company named Sempra abbreviated as SRE when the article is not about site reliability engineering.
+- Mortgage-fee waivers, mobile-gift-card refunds, or general customer-benefit notices without an IT product, technical mechanism, regulation change, or reusable market mechanism.
+- Broad opinion pieces about imagination, talent, or mindset unless they contain a concrete method, measured result, or operating framework.
+- GitHub/GitLab/Copilot minor product updates such as saved issue views, issue permission toggles, desktop-app point releases, row-height changes, model availability for free/student plans, or AI credit/billing pools when they do not change CI/CD, deployment, operations, security enforcement, auditability, or lifecycle workflow.
+
+Calibration examples:
+1. Generic financial-sector AI talent training or recruitment news without concrete technology or policy implications -> noise.
+2. An award ceremony or general collaboration announcement without product, adoption, or strategic evidence -> noise.
+3. Relaxation of financial network-separation regulations, including security obligations and effects on AI/SaaS adoption -> work_signal.
+4. A concrete AI governance framework or reusable engineering method not directly tied to the user's product -> learning_signal.
+5. A competitor product release containing specific capabilities, target customers, deployment model, or positioning changes -> work_signal.
+
+Important exceptions and safeguards:
+- Do not classify an item as noise solely because it is a press release, education program, award, or partnership. Preserve it as a signal when it contains concrete evidence of product adoption, competitor movement, regulation, or market change.
+- When the title and summary do not provide enough evidence, use review_queue and lower confidence instead of inventing details.
+- Write the reason in natural Korean and cite concrete details from the item.
+
+JSON schema:
+{{
+  "primary_bucket": "review_queue|work_signal|learning_signal|noise",
+  "score": 0,
+  "confidence": 0,
+  "reason": "한국어 1-2문장. 이 항목이 나중에 왜 쓸 만한지 또는 왜 노이즈인지 구체적으로 설명",
+  "evidence_points": ["제공된 제목·요약에서 직접 확인되는 구체 사실"],
+  "suggested_tags": ["competitor"],
+  "related_theme": "짧은 한국어 테마"
+}}
+"""
+
+
+def normalize_editor_classification_result(
+    result: Dict[str, Any],
+    item: Dict[str, Any],
+    model_name: str,
+) -> Dict[str, Any]:
+    bucket = str(result.get("primary_bucket", "review_queue")).strip()
+    if bucket == "insight":
+        bucket = "work_signal"
+    if bucket not in ("review_queue", "work_signal", "learning_signal", "noise"):
+        bucket = "review_queue"
+
+    def clamp_score(value: Any, default: int) -> int:
+        try:
+            return max(0, min(int(value), 100))
+        except Exception:
+            return default
+
+    evidence = assess_editor_evidence(item)
+    evidence_points = _supported_evidence_points(
+        result.get("evidence_points", []),
+        evidence["cleaned_summary"],
+    )
+    forced_review_reason = ""
+    if not evidence["sufficient"]:
+        bucket = "review_queue"
+        forced_review_reason = (
+            f"제목과 출처 외에 판단할 설명이 부족하여 자동 확정하지 않았습니다. "
+            f"요약 또는 원문을 확보한 뒤 다시 분류해야 합니다."
+        )
+    elif bucket in ("work_signal", "learning_signal") and not evidence_points:
+        bucket = "review_queue"
+        forced_review_reason = "제공된 설명에서 직접 확인되는 구체 근거를 찾지 못해 자동 확정하지 않았습니다."
+
+    tags = database.normalize_editor_tags(
+        result.get("suggested_tags", item.get("suggested_tags", [])),
+        limit=4,
+    )
+    if not tags:
+        tags = ["technical_reference"]
+
+    reason = forced_review_reason or str(result.get("reason", "")).strip()
+    if not reason:
+        reason = "이 항목의 재사용 가치 판단을 위해 정밀 분류를 실행했지만, 구체 이유가 비어 있어 검토 대기로 남겼습니다."
+
+    normalized = {
+        "primary_bucket": bucket,
+        "score": min(clamp_score(result.get("score"), 55), 55) if forced_review_reason else clamp_score(result.get("score"), 55),
+        "confidence": min(clamp_score(result.get("confidence"), 60), 65) if forced_review_reason else clamp_score(result.get("confidence"), 60),
+        "reason": reason,
+        "evidence_points": evidence_points,
+        "evidence_quality": {
+            "sufficient": evidence["sufficient"],
+            "cleaned_length": evidence["cleaned_length"],
+            "minimum_length": evidence["minimum_length"],
+            "contains_html": evidence["contains_html"],
+        },
+        "suggested_tags": tags,
+        "secondary_buckets": tags,
+        "related_theme": str(result.get("related_theme", "")).strip() or item.get("category") or item.get("source_name") or "전략 신호",
+        "classification_source": "llm",
+        "model_name": model_name,
+        "prompt_version": "reuse-value-profile-v5-trombone",
+    }
+    return apply_editor_reuse_guard(normalized, item)
+
+
+def apply_editor_reuse_guard(review: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    """Code-level backstop against confident keyword-driven over-promotion."""
+    guarded = dict(review)
+    bucket = guarded.get("primary_bucket") or "review_queue"
+    title = re.sub(r"^\s*\[[^\]]{1,40}\]\s*", "", str(item.get("title") or "")).lower()
+    evidence_quality = assess_editor_evidence(item)
+    summary = evidence_quality["cleaned_summary"].lower()
+    haystack = f"{title} {summary}"
+    evidence_points = [str(point).strip() for point in guarded.get("evidence_points", []) if str(point).strip()]
+
+    obvious_noise_patterns = (
+        "교육생 모집", "직무교육", "교원", "설문", "세미나", "해커톤", "인재 양성",
+        "박물관", "테라타워", "지식산업센터", "주담대", "중도상환", "상품권 환불",
+        "셈프라", "sempra", "포럼 개최", "창립기념 포럼", "에너지 인프라 시장", "smr² 플랫폼 국가연구소",
+        "상상력", "문제 정의 능력", "surf day",
+    )
+    concrete_markers = (
+        "아키텍처", "워크플로", "알고리즘", "프로토콜", "규제", "표준", "가이드라인",
+        "취약점", "sbom", "rag", "데이터베이스", "api", "보안", "실증", "성능",
+        "감소", "향상", "수율", "생산성", "컴포저블", "하네스", "mcp", "출시", "구축",
+    )
+    generic_event_patterns = ("포럼", "행사", "협력", "업무협약", "설문조사")
+    concrete_count = sum(1 for marker in concrete_markers if marker in haystack)
+    forum_announcement = "포럼" in title and "개최" in title
+    obvious_noise = forum_announcement or any(pattern in title for pattern in obvious_noise_patterns)
+    generic_event_in_title = (
+        any(pattern in title for pattern in generic_event_patterns)
+        or re.search(r"\bmou\b", title) is not None
+    )
+    generic_without_mechanism = generic_event_in_title and concrete_count < 2
+
+    trombone_lifecycle_patterns = (
+        "ci/cd", "cicd", "devops", "devsecops", "platform engineering", "플랫폼 엔지니어링",
+        "배포 파이프라인", "배포 자동화", "릴리스 파이프라인", "release pipeline",
+        "변경 관리", "변경관리", "change management", "소프트웨어 공급망", "software supply chain",
+        "개발 워크플로", "개발자 워크플로", "developer workflow", "코드 생성", "ai 코딩",
+        "코딩 에이전트", "바이브 코딩", "developer experience", "개발자 경험", "codex security",
+        "배포 전 검증", "deployment simulation", "attestation", "provenance", "변조 방지 실행 이력",
+        "sre", "aiops", "관측성", "런타임 정책",
+    )
+    pure_ai_patterns = (
+        "생성형 ai", "foundation model", "파운데이션 모델", "llm", "대규모 언어 모델",
+        "ai 모델", "ai 기술", "ai 성능", "ai 활용", "ai 도입", "ai 에이전트", "chatgpt", "gpt-",
+    )
+    financial_patterns = ("금융", "은행", "보험", "증권", "핀테크")
+    governance_patterns = ("규제", "감사", "통제", "추적", "망분리", "컴플라이언스", "거버넌스")
+    has_lifecycle_mechanism = any(pattern in haystack for pattern in trombone_lifecycle_patterns)
+    has_pure_ai_topic = any(pattern in haystack for pattern in pure_ai_patterns)
+    has_financial_context = any(pattern in haystack for pattern in financial_patterns)
+    has_governance_context = any(pattern in haystack for pattern in governance_patterns)
+    minor_devtool_patterns = (
+        "saved views", "저장뷰", "row heights", "row height", "issue creation", "issue 생성",
+        "restrict issue", "collaborators only", "github desktop", "desktop 3.", "desktop version",
+        "ai credit", "credit pools", "billing", "budget limits", "hard budget", "free and student plans", "model selection for free",
+        "projects", "repository issues",
+    )
+    devtool_source_patterns = ("github", "gitlab", "copilot", "jetbrains", "vs code")
+    strong_lifecycle_devtool_patterns = (
+        "runner", "runners", "actions", "ci/cd", "deployment", "deploy", "pipeline", "secret scanning",
+        "code scanning", "merge protection", "pull request", "agent session", "copilot agent",
+        "code review", "credential revocation", "incident response", "provenance", "attestation",
+    )
+    is_devtool_item = any(pattern in haystack for pattern in devtool_source_patterns)
+    has_minor_devtool_update = any(pattern in haystack for pattern in minor_devtool_patterns)
+    has_strong_devtool_lifecycle = any(pattern in haystack for pattern in strong_lifecycle_devtool_patterns)
+
+    network_separation_change = (
+        "망분리" in haystack
+        and evidence_quality["sufficient"]
+        and any(
+            marker in haystack
+            for marker in ("규제 완화", "의무를 면제", "의무'를 면제", "비조치의견서", "전자금융감독규정")
+        )
+    )
+    if network_separation_change:
+        guarded["primary_bucket"] = "work_signal"
+        guarded["score"] = max(int(guarded.get("score") or 0), 85)
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), 82), 88)
+        guarded["reason"] = (
+            "[코드 안전장치] 충분한 본문에서 금융권 망분리 의무의 구체적 완화·면제 조치를 "
+            f"확인해 업무 신호로 보존했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "preserved_regulatory_work_signal"
+        return guarded
+
+    if (
+        evidence_quality["sufficient"]
+        and evidence_points
+        and has_lifecycle_mechanism
+        and not obvious_noise
+        and not generic_without_mechanism
+        and not (has_minor_devtool_update and not has_strong_devtool_lifecycle)
+    ):
+        guarded["primary_bucket"] = "work_signal"
+        guarded["score"] = max(int(guarded.get("score") or 0), 82 if has_financial_context else 78)
+        minimum_confidence = 82 if has_financial_context and has_governance_context else 76
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), minimum_confidence), 88)
+        guarded["reason"] = (
+            "[TROMBONE 기준] 개발·배포·운영 워크플로 또는 변경 통제와 직접 연결된 "
+            f"구체 근거를 확인해 업무 신호로 보존했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "preserved_trombone_work_signal"
+        return guarded
+
+    if bucket == "work_signal" and is_devtool_item and has_minor_devtool_update and not has_strong_devtool_lifecycle:
+        target_bucket = "noise" if any(pattern in haystack for pattern in ("github desktop", "desktop 3.", "row height", "row heights")) else "learning_signal"
+        guarded["primary_bucket"] = target_bucket
+        guarded["score"] = min(int(guarded.get("score") or 0), 60 if target_bucket == "learning_signal" else 40)
+        guarded["confidence"] = min(max(int(guarded.get("confidence") or 0), 74), 82)
+        guarded["reason"] = (
+            "[TROMBONE 기준] 개발도구 소식이지만 개발·배포·운영 프로세스나 변경 통제를 "
+            f"실제로 바꾸는 근거가 약한 사소한 기능/정책 업데이트라 {database.EDITOR_BUCKET_LABELS[target_bucket]}로 조정했습니다. "
+            f"{guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "demoted_minor_devtool_update"
+        return guarded
+
+    if bucket == "work_signal" and has_pure_ai_topic and not has_lifecycle_mechanism:
+        guarded["primary_bucket"] = "learning_signal"
+        guarded["score"] = min(int(guarded.get("score") or 0), 75)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 85)
+        guarded["reason"] = (
+            "[TROMBONE 기준] AI 자체 동향이며 개발·배포·운영 또는 변경 통제와의 직접 연결이 "
+            f"확인되지 않아 학습 신호로 조정했습니다. {guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "demoted_pure_ai_to_learning"
+        return guarded
+
+    if bucket == "noise":
+        noise_cap = 70 + min(12, len(evidence_points) * 3) + (4 if obvious_noise else 0)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), noise_cap, 88)
+        guarded["guardrail"] = "noise_evidence_checked"
+        return guarded
+
+    if bucket == "review_queue":
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 65)
+        guarded["guardrail"] = "review_queue_evidence_checked"
+        return guarded
+
+    if obvious_noise or generic_without_mechanism:
+        guarded["primary_bucket"] = "noise"
+        guarded["score"] = min(int(guarded.get("score") or 0), 35)
+        guarded["confidence"] = 88 if obvious_noise else 78
+        trigger = "명백한 교육·행사·키워드 오염 유형" if obvious_noise else "구체 메커니즘이 부족한 일반 행사·협력 유형"
+        guarded["reason"] = (
+            f"[코드 안전장치] {trigger}이라 긍정 신호로 자동 승격하지 않았습니다. "
+            f"{guarded.get('reason', '')}"
+        ).strip()
+        guarded["guardrail"] = "forced_noise"
+        return guarded
+
+    if not evidence_points:
+        guarded["primary_bucket"] = "review_queue"
+        guarded["score"] = min(int(guarded.get("score") or 0), 55)
+        guarded["confidence"] = min(int(guarded.get("confidence") or 0), 65)
+        guarded["reason"] = (
+            "[코드 안전장치] 재사용 가능한 기술·시장 메커니즘을 evidence에서 확인하지 못해 "
+            "자동 승격하지 않았습니다."
+        )
+        guarded["guardrail"] = "forced_review_queue"
+        return guarded
+
+    # Model confidence was clustered at 90/95 in the first pilot. Cap it by
+    # independently observable evidence richness rather than trusting tone.
+    evidence_cap = 68 + min(12, len(evidence_points) * 3) + min(7, concrete_count)
+    guarded["confidence"] = min(int(guarded.get("confidence") or 0), evidence_cap, 89)
+    guarded["guardrail"] = "positive_evidence_checked"
+    return guarded
+
+
+async def refine_editor_review_item(api_key: str, item: Dict[str, Any], profile_context: str = "") -> Dict[str, Any]:
+    if not assess_editor_evidence(item)["sufficient"]:
+        return normalize_editor_classification_result({}, item, "gemini")
+    prompt = build_editor_classification_prompt(item, profile_context)
+    sdk_config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions="You classify collected monitoring items for a Korean strategy team. Return valid JSON only."
+    )
+    async with Agent(config=sdk_config) as ai_agent:
+        response = await ai_agent.chat(prompt)
+        text = await response.text()
+
+    result = extract_json_object(text)
+    return normalize_editor_classification_result(result, item, "gemini")
+
+
+def refine_editor_review_item_ollama(
+    model: str,
+    item: Dict[str, Any],
+    profile_context: str = "",
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    if not assess_editor_evidence(item)["sufficient"]:
+        normalized = normalize_editor_classification_result({}, item, f"ollama:{model}")
+        normalized["runtime"] = {
+            "total_duration_ns": 0,
+            "load_duration_ns": 0,
+            "prompt_eval_count": 0,
+            "eval_count": 0,
+            "skipped": True,
+        }
+        return normalized
+    prompt = build_editor_classification_prompt(item, profile_context)
+    payload = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "system": "You classify collected monitoring items for a Korean strategy team. Return valid JSON only.",
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0},
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "http://127.0.0.1:11434/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        raw = json.load(response)
+
+    parsed = extract_json_object(raw.get("response", ""))
+    normalized = normalize_editor_classification_result(parsed, item, f"ollama:{model}")
+    normalized["runtime"] = {
+        "total_duration_ns": int(raw.get("total_duration") or 0),
+        "load_duration_ns": int(raw.get("load_duration") or 0),
+        "prompt_eval_count": int(raw.get("prompt_eval_count") or 0),
+        "eval_count": int(raw.get("eval_count") or 0),
+    }
+    return normalized
+
+
+def get_ollama_status(model: str = EDITOR_OLLAMA_MODEL, timeout_seconds: int = 3) -> Dict[str, Any]:
+    try:
+        request = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.load(response)
+        model_names = [str(entry.get("name", "")) for entry in payload.get("models", [])]
+        return {
+            "available": model in model_names,
+            "model": model,
+            "installed_models": model_names,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "model": model,
+            "installed_models": [],
+            "error": str(exc),
+        }
+
+
+def get_ollama_backfill_preview(
+    profile_id: int,
+    limit: int = 2000,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> Dict[str, Any]:
+    candidates = database.get_editor_ollama_backfill_candidates(
+        profile_id,
+        limit=limit,
+        primary_bucket=primary_bucket,
+        item_type=item_type,
+    )
+    eligible = []
+    insufficient = []
+    for item in candidates:
+        quality = assess_editor_evidence(item)
+        preview_item = {
+            "ai_review_id": item.get("ai_review_id"),
+            "item_type": item.get("item_type"),
+            "item_id": item.get("item_id"),
+            "title": item.get("title", ""),
+            "source_name": item.get("source_name", ""),
+            "category": item.get("category", ""),
+            "manual_saved": int(item.get("manual_saved") or 0),
+            "evidence_quality": {
+                "sufficient": quality["sufficient"],
+                "cleaned_length": quality["cleaned_length"],
+                "minimum_length": quality["minimum_length"],
+                "contains_html": quality["contains_html"],
+            },
+        }
+        if quality["sufficient"]:
+            eligible.append({**item, **preview_item})
+        else:
+            insufficient.append(preview_item)
+
+    return {
+        "profile_id": profile_id,
+        "primary_bucket": primary_bucket or "all",
+        "item_type": item_type or "all",
+        "model": EDITOR_OLLAMA_MODEL,
+        "candidate_count": len(candidates),
+        "eligible_count": len(eligible),
+        "insufficient_count": len(insufficient),
+        "manual_saved_eligible_count": sum(int(item.get("manual_saved") or 0) for item in eligible),
+        "eligible": eligible,
+        "insufficient": insufficient,
+    }
+
+
+def _prepare_operational_review(review: Dict[str, Any]) -> Dict[str, Any]:
+    prepared = dict(review)
+    points = [str(point).strip() for point in prepared.get("evidence_points", []) if str(point).strip()]
+    if points:
+        prepared["reason"] = f"{prepared.get('reason', '').strip()}\n[근거] {' | '.join(points)}".strip()
+    return prepared
+
+
+def _select_grouped_ollama_targets(eligible: list[Dict[str, Any]], limit: int) -> list[Dict[str, Any]]:
+    """Select up to limit source items while keeping confirmed event groups intact."""
+    by_group: Dict[str, list[Dict[str, Any]]] = {}
+    for item in eligible:
+        event_key = str(item.get("event_group_key") or "").strip()
+        key = event_key or f"item:{item['item_type']}:{item['item_id']}"
+        by_group.setdefault(key, []).append(item)
+
+    units = []
+    selected_count = 0
+    for key, members in by_group.items():
+        if selected_count and selected_count + len(members) > limit:
+            continue
+        representative = max(members, key=lambda row: len(row.get("summary") or ""))
+        units.append({"key": key, "representative": representative, "members": members})
+        selected_count += len(members)
+        if selected_count >= limit:
+            break
+    return units
+
+
+def run_ollama_backfill(
+    profile_id: int,
+    limit: int = 200,
+    primary_bucket: str = "",
+    item_type: str = "",
+) -> Dict[str, Any]:
+    ollama = get_ollama_status()
+    if not ollama["available"]:
+        raise RuntimeError("Ollama 또는 gemma4:latest 모델을 사용할 수 없어 아무 항목도 변경하지 않았습니다.")
+
+    preview = get_ollama_backfill_preview(
+        profile_id,
+        limit=2000,
+        primary_bucket=primary_bucket,
+        item_type=item_type,
+    )
+    target_limit = max(1, min(int(limit or 200), 500))
+    units = _select_grouped_ollama_targets(preview["eligible"], target_limit)
+    targets = [member for unit in units for member in unit["members"]]
+    profile_context = build_editor_profile_context(profile_id)
+    results = []
+    started_at = datetime.now()
+
+    for unit in units:
+        item = unit["representative"]
+        review = refine_editor_review_item_ollama(EDITOR_OLLAMA_MODEL, item, profile_context)
+        review = _prepare_operational_review(review)
+        for member in unit["members"]:
+            if database.has_user_editor_judgment(profile_id, member["item_type"], member["item_id"]):
+                continue
+            if member.get("ai_review_id"):
+                saved = database.update_ai_editor_review_classification(
+                    profile_id=profile_id,
+                    ai_review_id=int(member["ai_review_id"]),
+                    review=review,
+                )
+            else:
+                saved = database.save_ai_editor_review(
+                    profile_id=profile_id,
+                    item_type=member["item_type"],
+                    item_id=int(member["item_id"]),
+                    review=review,
+                )
+            results.append({
+                "ai_review_id": saved.get("id"),
+                "item_type": member["item_type"],
+                "item_id": member["item_id"],
+                "title": member.get("title", ""),
+                "event_group_key": member.get("event_group_key") or "",
+                "classified_via_representative": member["item_id"] != item["item_id"],
+                "previous_bucket": member.get("existing_bucket"),
+                "previous_score": member.get("score"),
+                "previous_confidence": member.get("confidence"),
+                "primary_bucket": review.get("primary_bucket"),
+                "score": review.get("score"),
+                "confidence": review.get("confidence"),
+                "reason": review.get("reason"),
+                "suggested_tags": review.get("suggested_tags", []),
+                "evidence_points": review.get("evidence_points", []),
+            })
+
+    bucket_counts: Dict[str, int] = {}
+    for result in results:
+        bucket = result.get("primary_bucket") or "unknown"
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+    return {
+        "success": True,
+        "model": EDITOR_OLLAMA_MODEL,
+        "primary_bucket": primary_bucket or "all",
+        "item_type": item_type or "all",
+        "target_count": len(targets),
+        "model_calls": len(units),
+        "completed": len(results),
+        "elapsed_seconds": round((datetime.now() - started_at).total_seconds(), 1),
+        "bucket_counts": bucket_counts,
+        "results": results,
+    }
+
+def estimate_llm_tokens(*texts: str) -> int:
+    char_count = sum(len(text or "") for text in texts)
+    return max(1, int(char_count / 3.5))
 
 def is_profile_due_for_scan(profile: Dict[str, Any], now: datetime) -> bool:
     if int(profile.get("auto_scan_enabled", 1) or 0) != 1:
@@ -387,6 +1115,10 @@ async def start_auto_scan_scheduler():
     global auto_scheduler_task, auto_retry_task
     if auto_scheduler_task is None or auto_scheduler_task.done():
         auto_scheduler_task = asyncio.create_task(auto_scan_scheduler())
+    active_logs.append(
+        f"[System] Trend content pipeline is {'ON' if TREND_CONTENT_PIPELINE_ENABLED else 'OFF'} "
+        f"(limit: {TREND_CONTENT_PIPELINE_LIMIT} per cycle).\n"
+    )
     # AI summaries are intentionally user-triggered so Gemini quota is not spent
     # just because many RSS/news items were collected in the background.
     active_logs.append("[System] Auto AI summary retry is disabled. Use selected/manual summary actions.\n")
@@ -400,6 +1132,12 @@ async def stop_auto_scan_scheduler():
         auto_retry_task.cancel()
 
 # --- Background Task ---
+def should_generate_editor_reviews_after_agent(args: List[str], profile_id: Optional[int]) -> bool:
+    if not profile_id:
+        return False
+    skip_flags = {"--retry-only", "--report-only", "--weekly-report", "--monthly-report"}
+    return not any(flag in args for flag in skip_flags)
+
 async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None):
     global active_process, active_logs, scan_status, active_profile_id
     
@@ -457,7 +1195,19 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
                 active_logs.pop(0)
                 
         await active_process.wait()
-        active_logs.append("\n[System] Scan process completed successfully.\n")
+        if active_process.returncode == 0:
+            active_logs.append("\n[System] Scan process completed successfully.\n")
+            if should_generate_editor_reviews_after_agent(args, profile_id):
+                try:
+                    reviews = database.generate_rule_based_ai_editor_reviews(profile_id=profile_id, limit=80, force=False)
+                    active_logs.append(
+                        f"[System] Editor candidate preparation completed. "
+                        f"{len(reviews)} new items were added to 후보 정리.\n"
+                    )
+                except Exception as review_error:
+                    active_logs.append(f"[System] Editor candidate preparation failed: {review_error}\n")
+        else:
+            active_logs.append(f"\n[System] Scan process exited with code {active_process.returncode}.\n")
     except Exception as e:
         active_logs.append(f"\n[System] ERROR running agent process: {e}\n")
     finally:
@@ -471,11 +1221,19 @@ async def run_agent_subprocess(args: List[str], profile_id: Optional[int] = None
 async def get_status(request: Request, profile_id: Optional[int] = None):
     """Returns the status and current live logs."""
     tail_logs = active_logs[-300:]
+    auto_scan_info = get_profile_auto_scan_info(profile_id)
+    selected_profile_id = auto_scan_info.get("profile_id")
+    content_pipeline = database.get_trend_content_pipeline_stats(selected_profile_id) if selected_profile_id else {}
+    content_pipeline.update({
+        "enabled": TREND_CONTENT_PIPELINE_ENABLED,
+        "limit": TREND_CONTENT_PIPELINE_LIMIT,
+    })
     return {
         "status": scan_status,
         "active_profile_id": active_profile_id,
         "is_admin": is_localhost(request),
-        "auto_scan": get_profile_auto_scan_info(profile_id),
+        "auto_scan": auto_scan_info,
+        "content_pipeline": content_pipeline,
         "log_line_count": len(active_logs),
         "logs": "".join(tail_logs)
     }
@@ -946,22 +1704,290 @@ async def api_toggle_trend_star(trend_id: int, is_starred: bool):
     database.toggle_trend_star(trend_id, 1 if is_starred else 0)
     return {"message": "Trend star status updated successfully."}
 
-@app.post("/api/summary/{item_type}/{item_id}")
-async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
-    """Generates an AI summary for one selected collected item."""
+@app.get("/api/editor/queue")
+async def api_get_editor_queue(profile_id: int, limit: int = 30, include_noise: bool = False):
+    """Returns TWT v2 editor-mode candidates for quick judgment."""
+    return database.get_editor_queue(profile_id=profile_id, limit=limit, include_noise=include_noise)
+
+@app.get("/api/editor/learning")
+async def api_get_editor_learning(profile_id: int):
+    """Returns a simple summary of the user's accumulated editorial judgments."""
+    return database.get_editor_learning_summary(profile_id=profile_id)
+
+@app.get("/api/editor/insights")
+async def api_get_editor_insights(profile_id: int, limit_per_bucket: int = 8, include_noise: bool = True):
+    """Returns AI-organized insight candidate buckets for the v2 dashboard."""
+    return database.get_ai_insight_candidates(
+        profile_id=profile_id,
+        limit_per_bucket=limit_per_bucket,
+        include_noise=include_noise
+    )
+
+@app.post("/api/editor/reviews/generate")
+async def api_generate_editor_reviews(payload: EditorReviewGeneratePayload):
+    """Creates rule-based AI editorial reviews for recent unreviewed items."""
+    reviews = database.generate_rule_based_ai_editor_reviews(
+        profile_id=payload.profile_id,
+        limit=payload.limit,
+        force=payload.force
+    )
+    return {"success": True, "created": len(reviews), "reviews": reviews}
+
+@app.post("/api/editor/reviews/move")
+async def api_move_editor_review(payload: EditorReviewMovePayload):
+    """Moves an active AI candidate card to a different editorial bucket."""
+    try:
+        result = database.move_ai_editor_review_group(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            target_bucket=payload.target_bucket,
+            note=payload.note
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, **result}
+
+@app.post("/api/editor/reviews/refine")
+async def api_refine_editor_review(payload: EditorReviewRefinePayload):
+    """Runs on-demand LLM precision classification for one active candidate."""
     if Agent is None or LocalAgentConfig is None:
         raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
 
-    profile = database.get_profile_by_id(profile_id)
+    profile = database.get_profile_by_id(payload.profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found.")
 
     api_key = profile.get("gemini_api_key", "")
     if not api_key or api_key == "••••••••":
-        raise HTTPException(status_code=400, detail="Gemini API Key is required for selected AI summaries.")
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for precision classification.")
+
+    context = database.get_ai_editor_review_context(payload.profile_id, payload.ai_review_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Active AI review not found.")
+
+    if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+        raise HTTPException(status_code=400, detail="이미 사용자가 판단한 카드라 AI가 다시 덮어쓰지 않습니다.")
+
+    try:
+        profile_context = build_editor_profile_context(payload.profile_id)
+        refined = await refine_editor_review_item(api_key, context, profile_context)
+        updated = database.update_ai_editor_review_classification(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            review=refined
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"정밀 분류 실패: {exc}")
+
+    return {"success": True, "review": updated}
+
+@app.post("/api/editor/reviews/refine-ollama")
+async def api_refine_editor_review_ollama(payload: EditorReviewRefinePayload):
+    """Runs one operational precision classification with the local Gemma model."""
+    context = database.get_ai_editor_review_context(payload.profile_id, payload.ai_review_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Active AI review not found.")
+    if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+        raise HTTPException(status_code=400, detail="이미 사용자가 판단한 카드라 로컬 AI가 다시 덮어쓰지 않습니다.")
+
+    ollama = await asyncio.to_thread(get_ollama_status)
+    if not ollama["available"]:
+        raise HTTPException(status_code=503, detail="Ollama 또는 gemma4:latest가 실행 중이 아니어서 분류 대기로 남겼습니다.")
+
+    try:
+        profile_context = build_editor_profile_context(payload.profile_id)
+        refined = await asyncio.to_thread(
+            refine_editor_review_item_ollama,
+            EDITOR_OLLAMA_MODEL,
+            context,
+            profile_context,
+        )
+        refined = _prepare_operational_review(refined)
+        updated = database.update_ai_editor_review_classification(
+            profile_id=payload.profile_id,
+            ai_review_id=payload.ai_review_id,
+            review=refined,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"로컬 정밀 분류 실패: {exc}")
+    return {"success": True, "provider": "ollama", "model": EDITOR_OLLAMA_MODEL, "review": updated}
+
+@app.get("/api/editor/reviews/ollama-preview")
+async def api_get_editor_ollama_preview(profile_id: int, limit: int = 2000):
+    """Previews eligible backfill items without modifying editor-review data."""
+    preview = get_ollama_backfill_preview(profile_id, limit=limit)
+    preview["ollama"] = await asyncio.to_thread(get_ollama_status)
+    preview["eligible"] = preview["eligible"][:20]
+    preview["insufficient"] = preview["insufficient"][:20]
+    return preview
+
+@app.post("/api/editor/reviews/ollama-backfill")
+async def api_run_editor_ollama_backfill(payload: EditorOllamaBackfillPayload):
+    """Runs an explicitly confirmed, one-time local-model backfill."""
+    preview = get_ollama_backfill_preview(payload.profile_id, limit=2000)
+    if not payload.execute:
+        return {
+            "success": True,
+            "executed": False,
+            "message": "미리보기만 수행했습니다. 운영 DB는 변경하지 않았습니다.",
+            "model": EDITOR_OLLAMA_MODEL,
+            "eligible_count": preview["eligible_count"],
+            "insufficient_count": preview["insufficient_count"],
+            "manual_saved_eligible_count": preview["manual_saved_eligible_count"],
+        }
+    try:
+        result = await asyncio.to_thread(run_ollama_backfill, payload.profile_id, payload.limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {**result, "executed": True}
+
+@app.post("/api/editor/reviews/refine-pilot")
+async def api_refine_editor_reviews_pilot(payload: EditorReviewPilotPayload):
+    """Runs a limited LLM precision-classification pilot for unjudged review-queue items."""
+    if Agent is None or LocalAgentConfig is None:
+        raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+
+    profile = database.get_profile_by_id(payload.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    api_key = profile.get("gemini_api_key", "")
+    if not api_key or api_key == "••••••••":
+        raise HTTPException(status_code=400, detail="Gemini API Key is required for precision classification.")
+
+    try:
+        targets = database.get_editor_refine_pilot_targets(
+            profile_id=payload.profile_id,
+            limit=payload.limit,
+            item_type=payload.item_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    profile_context = build_editor_profile_context(payload.profile_id)
+    started_at = datetime.now()
+    results = []
+    estimated_input_tokens = 0
+    estimated_output_tokens = 0
+
+    for index, target in enumerate(targets, start=1):
+        context = database.get_ai_editor_review_context(payload.profile_id, target["ai_review_id"])
+        if not context:
+            continue
+        if database.has_user_editor_judgment(payload.profile_id, context["item_type"], context["item_id"]):
+            continue
+        estimated_input_tokens += estimate_llm_tokens(
+            profile_context,
+            context.get("title", ""),
+            context.get("source_name", ""),
+            context.get("category", ""),
+            context.get("summary", ""),
+        )
+        try:
+            refined = await refine_editor_review_item(api_key, context, profile_context)
+            estimated_output_tokens += estimate_llm_tokens(json.dumps(refined, ensure_ascii=False))
+            updated = database.update_ai_editor_review_classification(
+                profile_id=payload.profile_id,
+                ai_review_id=target["ai_review_id"],
+                review=refined
+            )
+            results.append({
+                "index": index,
+                "id": updated.get("id"),
+                "item_type": updated.get("item_type"),
+                "item_id": updated.get("item_id"),
+                "title": context.get("title", ""),
+                "source_name": context.get("source_name", ""),
+                "previous_bucket": target.get("primary_bucket"),
+                "primary_bucket": updated.get("primary_bucket"),
+                "score": updated.get("score"),
+                "confidence": updated.get("confidence"),
+                "reason": updated.get("reason"),
+                "suggested_tags": updated.get("suggested_tags", ""),
+                "classification_source": updated.get("classification_source"),
+            })
+        except Exception as exc:
+            return {
+                "success": False,
+                "completed": len(results),
+                "target_count": len(targets),
+                "error": str(exc),
+                "results": results,
+                "usage_estimate": {
+                    "calls": len(results),
+                    "input_tokens": estimated_input_tokens,
+                    "output_tokens": estimated_output_tokens,
+                    "total_tokens": estimated_input_tokens + estimated_output_tokens,
+                    "note": "SDK usage metadata is not exposed here, so this is a rough character-based estimate."
+                }
+            }
+
+    elapsed_seconds = round((datetime.now() - started_at).total_seconds(), 1)
+    bucket_counts: Dict[str, int] = {}
+    for result in results:
+        bucket = result.get("primary_bucket") or "unknown"
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    return {
+        "success": True,
+        "target_count": len(targets),
+        "completed": len(results),
+        "elapsed_seconds": elapsed_seconds,
+        "bucket_counts": bucket_counts,
+        "results": results,
+        "usage_estimate": {
+            "calls": len(results),
+            "input_tokens": estimated_input_tokens,
+            "output_tokens": estimated_output_tokens,
+            "total_tokens": estimated_input_tokens + estimated_output_tokens,
+            "note": "SDK usage metadata is not exposed here, so this is a rough character-based estimate."
+        }
+    }
+
+@app.post("/api/editor/judgments")
+async def api_save_editor_judgment(payload: EditorJudgmentPayload):
+    """Stores one editor judgment label for a collected item."""
+    try:
+        updated_review = {}
+        if payload.label in ("work_signal", "learning_signal", "noise"):
+            updated_review = database.update_active_editor_review_bucket_by_item(
+                profile_id=payload.profile_id,
+                item_type=payload.item_type,
+                item_id=payload.item_id,
+                target_bucket=payload.label,
+                note=payload.note or "보관함에서 편집장 판단 수정"
+            )
+        judgment = database.save_editor_judgment(
+            profile_id=payload.profile_id,
+            item_type=payload.item_type,
+            item_id=payload.item_id,
+            label=payload.label,
+            note=payload.note,
+            ai_review_id=payload.ai_review_id or updated_review.get("id")
+        )
+        database.sync_starred_with_editor_label(payload.item_type, payload.item_id, payload.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "judgment": judgment, "review": updated_review}
+
+@app.post("/api/summary/{item_type}/{item_id}")
+async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
+    """Generates an AI summary for one selected collected item."""
+    profile = database.get_profile_by_id(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
 
     try:
         if item_type == "doc":
+            if Agent is None or LocalAgentConfig is None:
+                raise HTTPException(status_code=500, detail="AI SDK is not available in this environment.")
+            api_key = profile.get("gemini_api_key", "")
+            if not api_key or api_key == "••••••••":
+                raise HTTPException(status_code=400, detail="Gemini API Key is required for selected document summaries.")
             item = database.get_doc_by_id(item_id)
             if not item or item.get("profile_id") != profile_id:
                 raise HTTPException(status_code=404, detail="Doc item not found.")
@@ -980,15 +2006,29 @@ async def api_summarize_item(item_type: str, item_id: int, profile_id: int):
             item = database.get_trend_by_id(item_id)
             if not item or item.get("profile_id") != profile_id:
                 raise HTTPException(status_code=404, detail="Trend item not found.")
-            analysis = await summarize_trend_item(api_key, item)
-            database.update_trend_analysis(
+            analysis = await asyncio.to_thread(summarize_trend_item_with_ollama, item)
+            updated = database.update_scanned_trend_content(
                 item_id,
-                analysis["title"],
-                analysis["summary"],
-                analysis["source"],
-                "complete",
-                ""
+                keyword=item.get("keyword", ""),
+                title=item.get("title", ""),
+                link=analysis.get("original_url") or item.get("link", ""),
+                summary=analysis["summary"],
+                source=analysis["source"],
+                published_at=item.get("published_at", ""),
+                analysis_status="complete",
+                analysis_error="",
+                original_url=analysis.get("original_url", ""),
+                source_url=analysis.get("source_url", ""),
+                content_status=analysis.get("content_status", "summarized"),
+                content_error="",
+                content_chars=analysis.get("content_chars", 0),
+                content_extractor=analysis.get("content_extractor", ""),
+                content_resolver=analysis.get("resolver", ""),
+                summary_model=analysis.get("summary_model", ""),
+                summary_evidence=analysis.get("evidence_points", []),
             )
+            if not updated:
+                raise RuntimeError("요약은 생성됐지만 기존 항목 저장에 실패했습니다.")
             return {"message": "Trend summary generated.", "item": database.get_trend_by_id(item_id)}
 
         raise HTTPException(status_code=400, detail="item_type must be 'doc' or 'trend'.")

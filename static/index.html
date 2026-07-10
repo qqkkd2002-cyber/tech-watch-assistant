@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20260616-auto-scan-sidebar-ui">
+    <link rel="stylesheet" href="style.css?v=20260702-gemma-review-state">
     <!-- html2pdf.js for Client-side PDF Exports -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Chart.js for Visualization Dashboard -->
@@ -52,6 +52,8 @@
                         </div>
                         <div id="auto-scan-next">다음 예정 확인 중</div>
                         <div id="auto-scan-latest">최근 수집 확인 중</div>
+                        <div id="content-pipeline-state">본문 요약 상태 확인 중</div>
+                        <div id="content-pipeline-warning" class="content-pipeline-warning" hidden></div>
                     </div>
                     <div class="scan-btn-group" style="margin-bottom: 8px;">
                         <button id="start-scan-btn" class="btn success">▶️ 지금 수동 수집</button>
@@ -71,6 +73,10 @@
                     <span class="nav-icon">❓</span>
                     <span class="nav-label">사용 가이드</span>
                 </a>
+                <a href="#candidate-review" class="nav-item" data-tab="candidate-review">
+                    <span class="nav-icon">🧭</span>
+                    <span class="nav-label">후보 정리</span>
+                </a>
                 <a href="#dashboard-competitor" class="nav-item" data-tab="dashboard-competitor" id="nav-dashboard-parent">
                     <span class="nav-icon">📊</span>
                     <span class="nav-label">대시보드</span>
@@ -85,7 +91,7 @@
                 </a>
                 <a href="#feed" class="nav-item" data-tab="feed">
                     <span class="nav-icon">📰</span>
-                    <span class="nav-label">모니터링 피드</span>
+                    <span class="nav-label">수집 원장</span>
                 </a>
                 <a href="#starred" class="nav-item sub-item" data-tab="starred">
                     <span class="nav-icon">⭐</span>
@@ -93,7 +99,7 @@
                 </a>
                 <a href="#reports" class="nav-item" data-tab="reports">
                     <span class="nav-icon">📈</span>
-                    <span class="nav-label">월간 전략 보고서</span>
+                    <span class="nav-label">전략 보고서</span>
                 </a>
                 <a href="#settings" class="nav-item" data-tab="settings">
                     <span class="nav-icon">⚙️</span>
@@ -117,12 +123,38 @@
 
         <!-- Main Content Area -->
         <main class="main-content">
+            <!-- Candidate Review Tab -->
+            <section id="candidate-review-tab" class="tab-pane">
+                <header class="content-header">
+                    <div class="header-titles">
+                        <h2>신호 후보 정리</h2>
+                        <p class="subtitle">새로 올라온 검토 대기 카드만 확인하고, 업무에 바로 쓸 신호와 지식 성장을 위한 신호를 나눠 확정합니다.</p>
+                    </div>
+                </header>
+
+                <section class="insight-candidates-panel">
+                    <div class="insight-panel-header">
+                        <div>
+                            <h3>검토 대기</h3>
+                            <p>처리 전 후보만 보는 작업대입니다. 업무 신호, 학습 신호, 노이즈로 확정한 카드는 여기서 사라지고, 결과는 대시보드와 원장에 축적됩니다.</p>
+                        </div>
+                        <div class="insight-panel-actions">
+                            <button id="summarize-review-queue-btn" class="glass-btn subtle" type="button">검토 대기 5개 요약</button>
+                            <button id="refine-review-queue-btn" class="glass-btn subtle" type="button">Gemma 소급 준비 확인</button>
+                            <button id="generate-insight-candidates-btn" class="glass-btn" type="button">AI 후보 정리</button>
+                        </div>
+                    </div>
+                    <div id="insight-candidate-status" class="insight-candidate-status">후보를 불러오는 중입니다.</div>
+                    <div id="insight-candidate-buckets" class="insight-candidate-buckets"></div>
+                </section>
+            </section>
+
             <!-- Competitor Dashboard Tab -->
             <section id="dashboard-competitor-tab" class="tab-pane">
                 <header class="content-header">
                     <div class="header-titles">
                         <h2>경쟁사 동향 대시보드</h2>
-                        <p class="subtitle">수집된 경쟁사의 기술 릴리즈 분석 및 기술 블로그 동향을 다각도로 분석합니다.</p>
+                        <p class="subtitle">수집·정제된 자료를 바탕으로 경쟁사 움직임과 기술 신호를 요약해 봅니다.</p>
                     </div>
                 </header>
                 
@@ -178,7 +210,7 @@
             <section id="dashboard-trend-tab" class="tab-pane">
                 <header class="content-header">
                     <div class="header-titles">
-                        <h2>기술 트렌드 대시보드</h2>
+                        <h2>기술 트렌드 현황</h2>
                         <p class="subtitle">수집된 글로벌 및 국내 기술 뉴스 분석과 주요 관심 키워드 빈도를 추적합니다.</p>
                     </div>
                 </header>
@@ -220,8 +252,8 @@
             <section id="feed-tab" class="tab-pane">
                 <header class="content-header">
                     <div class="header-titles">
-                        <h2>모니터링 피드</h2>
-                        <p class="subtitle">수집된 경쟁사 릴리즈 및 트렌드 뉴스 실시간 요약 피드입니다.</p>
+                        <h2>수집 원장</h2>
+                        <p class="subtitle">자동/수동 수집으로 들어온 전체 원본 자료입니다. AI 후보 정리 전후의 원문을 검색하고 다시 확인할 수 있습니다.</p>
                     </div>
                     <div class="header-actions">
                         <div class="search-box">
@@ -273,15 +305,21 @@
                 <header class="content-header">
                     <div class="header-titles">
                         <h2>중요 보관함</h2>
-                        <p class="subtitle">별표로 모아둔 핵심 경쟁사 업데이트 및 트렌드 뉴스 목록입니다.</p>
+                        <p class="subtitle">후보 정리에서 업무 신호·학습 신호로 확정했거나 별표로 저장한 핵심 자료 목록입니다.</p>
                     </div>
                     <div class="header-actions">
                         <div class="search-box">
                             <span class="search-icon">🔍</span>
                             <input type="text" id="starred-search" placeholder="보관함 내 검색...">
                         </div>
+                        <div class="feed-filters" id="starred-reason-filters">
+                            <button class="starred-reason-filter-btn filter-btn active" data-reason-filter="all">전체</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="work_signal">업무 신호</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="learning_signal">학습 신호</button>
+                            <button class="starred-reason-filter-btn filter-btn" data-reason-filter="manual">수동 저장</button>
+                        </div>
                         <div class="feed-filters" id="starred-feed-filters">
-                            <button class="starred-filter-btn filter-btn active" data-filter="all">전체</button>
+                            <button class="starred-filter-btn filter-btn active" data-filter="all">전체 출처</button>
                             <button class="starred-filter-btn filter-btn" data-filter="docs">경쟁사 문서</button>
                             <button class="starred-filter-btn filter-btn" data-filter="references">기술 레퍼런스</button>
                             <button class="starred-filter-btn filter-btn" data-filter="trends">키워드 뉴스</button>
@@ -292,7 +330,7 @@
 
                 <div class="folder-filters-row" id="starred-folder-filters" style="display: none; justify-content: space-between; align-items: center;">
                     <div class="folder-chips-list" id="starred-folder-chips" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
-                    <div class="folder-group-toggle" id="starred-group-toggle-container" style="display: flex; align-items: center; gap: 6px;">
+                    <div class="folder-group-toggle" id="starred-group-toggle-container" style="display: none; align-items: center; gap: 6px;">
                         <input type="checkbox" id="starred-group-by-folder" class="custom-checkbox">
                         <label for="starred-group-by-folder" style="font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;">📁 폴더별 모아보기</label>
                     </div>
@@ -302,20 +340,20 @@
                     <div class="empty-state" id="starred-empty" style="display: none;">
                         <span class="empty-icon">📂</span>
                         <h3>중요 보관함이 비어 있습니다</h3>
-                        <p>모니터링 피드에서 핵심 정보의 별표(★)를 눌러 여기에 추가해 보세요.</p>
+                        <p>후보 정리에서 업무 신호·학습 신호로 확정하거나, 수집 원장에서 별표(★)를 눌러 여기에 추가해 보세요.</p>
                     </div>
                     <div class="feed-columns-container" id="starred-items-grid">
-                        <div class="feed-column" id="starred-col-competitor">
-                            <div class="column-header">🏢 경쟁사 업데이트 <span class="count-badge" id="starred-count-competitor">0</span></div>
-                            <div class="column-items" id="starred-items-competitor"></div>
+                        <div class="feed-column" id="starred-col-work">
+                            <div class="column-header">💼 업무 신호 <span class="count-badge" id="starred-count-work">0</span></div>
+                            <div class="column-items" id="starred-items-work"></div>
                         </div>
-                        <div class="feed-column" id="starred-col-reference">
-                            <div class="column-header">📚 기술 레퍼런스 <span class="count-badge" id="starred-count-reference">0</span></div>
-                            <div class="column-items" id="starred-items-reference"></div>
+                        <div class="feed-column" id="starred-col-learning">
+                            <div class="column-header">🧠 학습 신호 <span class="count-badge" id="starred-count-learning">0</span></div>
+                            <div class="column-items" id="starred-items-learning"></div>
                         </div>
-                        <div class="feed-column" id="starred-col-trend">
-                            <div class="column-header">🔥 기술 트렌드 뉴스 <span class="count-badge" id="starred-count-trend">0</span></div>
-                            <div class="column-items" id="starred-items-trend"></div>
+                        <div class="feed-column" id="starred-col-manual">
+                            <div class="column-header">⭐ 수동 저장 <span class="count-badge" id="starred-count-manual">0</span></div>
+                            <div class="column-items" id="starred-items-manual"></div>
                         </div>
                     </div>
                 </div>
@@ -325,8 +363,8 @@
             <section id="reports-tab" class="tab-pane">
                 <header class="content-header">
                     <div class="header-titles">
-                        <h2>월간 전략 보고서</h2>
-                        <p class="subtitle">수집 데이터를 바탕으로 주간/월간 기술 신호 및 경쟁사 동향 보고서를 아카이빙합니다.</p>
+                        <h2>전략 보고서</h2>
+                        <p class="subtitle">매일 축적한 수집·정제 데이터를 바탕으로 주간/월간 보고서를 생성하고 보관합니다.</p>
                     </div>
                     <div class="header-actions reports-header-actions">
                         <div class="feed-filters" id="report-type-filters">
@@ -531,7 +569,7 @@
                                 <label for="template-type-select">보고서 양식 선택</label>
                                 <select id="template-type-select" class="profile-dropdown" disabled>
                                     <option value="basic">[기본] 기술 신호 및 경쟁사 동향 보고서</option>
-                                    <option value="monthly">[월간] 솔루션전략팀 월간 전략 보고서</option>
+                                    <option value="monthly">[월간] 솔루션전략팀 전략 보고서</option>
                                     <option value="detailed">[상세] 경쟁사 기능 심층분석보고서</option>
                                     <option value="custom">사용자 정의 템플릿 (개별 설정)</option>
                                 </select>
@@ -630,7 +668,7 @@
                                 <label for="global-template-select">표준 템플릿 선택</label>
                                 <select id="global-template-select" class="profile-dropdown">
                                     <option value="basic">기본 기술 신호 및 경쟁사 동향 보고서</option>
-                                    <option value="monthly">솔루션전략팀 월간 전략 보고서</option>
+                                    <option value="monthly">솔루션전략팀 전략 보고서</option>
                                     <option value="detailed">경쟁사 기술 심층 분석 보고서</option>
                                 </select>
                             </div>
@@ -654,7 +692,7 @@
                 <header class="content-header">
                     <div class="header-titles">
                         <h2>Tech Watch Tracker 소개</h2>
-                        <p class="subtitle">솔루션전략팀이 경쟁사 변화와 기술 신호를 상시 관측하고, 전략 산출물로 연결하기 위한 기술 시장 관측소입니다.</p>
+                        <p class="subtitle">자동 수집으로 기술/경쟁사 소식을 계속 모으고, AI가 후보를 좁힌 뒤 사용자가 업무 신호와 학습 신호를 확정하는 편집장형 모니터링 도구입니다.</p>
                     </div>
                 </header>
 
@@ -663,76 +701,74 @@
                         <div class="intro-header">
                             <span class="intro-icon">🎯</span>
                             <div>
-                                <h3>솔루션전략팀의 기술 시장 관측소</h3>
-                                <p class="intro-tagline">Tech Watch Tracker는 매번 사람이 검색하던 <strong>경쟁사 릴리즈, 기술 레퍼런스, 기술 키워드 뉴스, 시장 변화 신호</strong>를 자동으로 축적하고, 반복되는 흐름을 <strong>경쟁사 비교자료, 제품 포지션 분석, 주간/월간 전략 보고서</strong>로 연결하는 업무 자동화 대시보드입니다.</p>
+                                <h3>솔루션전략팀의 AI 편집장형 기술 관측소</h3>
+                                <p class="intro-tagline">Tech Watch Tracker는 사용자가 매번 검색하지 않아도 <strong>경쟁사 릴리즈, 기술 레퍼런스, 키워드 뉴스, 시장 변화 신호</strong>를 주기적으로 수집합니다. 쌓인 자료는 AI가 먼저 <strong>검토 대기·노이즈</strong>로 좁히고, 필요한 항목만 요약한 뒤 사용자가 <strong>업무 신호</strong> 또는 <strong>학습 신호</strong>로 확정해 보고서와 지식 성장 자료로 활용합니다.</p>
                             </div>
                         </div>
 
-                        <div class="guide-principle-box">
-                            <span class="principle-label">핵심 운영 원칙</span>
-                            <p><strong>개인별 관심사는 프로필로 분리하고, 수집 데이터와 분석 산출물은 팀 자산으로 중앙 축적합니다.</strong></p>
-                            <small>팀원은 각자 관심 키워드와 폴더를 운영하고, 누적 데이터는 전략 보고서뿐 아니라 경쟁사 비교, 포지션 비교, 기술 채택 흐름 분석에 활용합니다.</small>
-                        </div>
-
-                        <div class="guide-value-grid">
-                            <div class="guide-value-card">
-                                <span class="value-label">자동화되는 업무</span>
-                                <ul>
-                                    <li>경쟁사 릴리즈/변경사항 수집</li>
-                                    <li>기술 레퍼런스와 키워드 뉴스 수집</li>
-                                    <li>발행일/수집일 기반 최신성 관리</li>
-                                    <li>중요 업데이트 선별과 보관</li>
-                                    <li>선택 항목 중심 AI 요약 생성</li>
-                                    <li>주간/월간 전략 보고서 초안 작성</li>
-                                </ul>
-                            </div>
-                            <div class="guide-value-card">
-                                <span class="value-label">효율화되는 지점</span>
-                                <ul>
-                                    <li>자료 검색과 1차 요약 시간 절감</li>
-                                    <li>경쟁사 업데이트 누락 감소</li>
-                                    <li>반복 등장 키워드와 시장 신호 누적</li>
-                                    <li>Gemini 사용량을 필요한 요약에 집중</li>
-                                    <li>전략회의/RFP/제안서 근거 확보</li>
-                                    <li>팀원별 관심 영역을 프로필로 관리</li>
-                                </ul>
-                            </div>
-                            <div class="guide-value-card">
-                                <span class="value-label">전략적으로 얻는 것</span>
-                                <ul>
-                                    <li>어떤 기술 키워드가 자주 등장하는지</li>
-                                    <li>경쟁사가 어느 방향으로 움직이는지</li>
-                                    <li>AI, DevSecOps, 거버넌스 등 반복 신호가 무엇인지</li>
-                                    <li>우리 제품과 경쟁사의 포지션 차이가 무엇인지</li>
-                                    <li>우리 솔루션 전략에 반영할 액션이 무엇인지</li>
-                                </ul>
+                        <div class="intro-hero-message">
+                            <span class="intro-kicker">핵심 운영 원칙</span>
+                            <h2>자동 수집으로 시장 신호를 쌓고, AI가 후보를 좁히고, 사람이 업무 신호와 학습 신호를 확정합니다.</h2>
+                            <p>모든 기사를 사람이 다 읽는 방식이 아니라, AI가 만든 검토 대기 목록을 편집장처럼 판단하는 워크플로우입니다.</p>
+                            <div class="intro-learning-loop">
+                                <strong>편집장 판단이 쌓일수록 AI도 더 좋아집니다.</strong>
+                                <span>업무 신호, 학습 신호, 노이즈로 나눈 판단이 다음 후보 정리와 보고서 품질을 높이는 학습 데이터가 됩니다.</span>
                             </div>
                         </div>
 
-                        <div class="intro-highlights-grid">
-                            <div class="highlight-box bg-purple-glow">
-                                <div class="highlight-title">
-                                    <span class="highlight-emoji">🔄</span>
-                                    <h4>상시 시장 신호 축적</h4>
+                        <div class="intro-feature-grid five-step">
+                            <div class="intro-feature-card collect">
+                                <span class="feature-step">01</span>
+                                <h4>자동 수집</h4>
+                                <p>서버가 켜져 있으면 설정한 주기마다 RSS, Docs, 키워드 뉴스가 쌓입니다. 발행일과 수집일을 따로 남겨 최신성을 확인합니다.</p>
+                                <div class="feature-tags">
+                                    <span>RSS·Docs·뉴스</span>
+                                    <span>발행일/수집일</span>
                                 </div>
-                                <p class="highlight-desc">업무가 생긴 뒤 급하게 검색하는 방식에서 벗어나, 평소에 경쟁사/기술 동향을 계속 쌓아두고 필요할 때 바로 분석할 수 있습니다.</p>
                             </div>
 
-                            <div class="highlight-box bg-cyan-glow">
-                                <div class="highlight-title">
-                                    <span class="highlight-emoji">📈</span>
-                                    <h4>보고서 초안 자동화</h4>
+                            <div class="intro-feature-card sort">
+                                <span class="feature-step">02</span>
+                                <h4>AI 후보 정리</h4>
+                                <p>쌓인 전체 자료를 그대로 읽지 않고, AI가 먼저 새 검토 대기 후보를 올립니다. 카드에는 시장 신호, 경쟁사, 제품 힌트, RFP 근거 같은 고정 태그가 붙습니다.</p>
+                                <div class="feature-tags">
+                                    <span>검토 대기</span>
+                                    <span>노이즈</span>
+                                    <span>추천 태그</span>
                                 </div>
-                                <p class="highlight-desc">누적 데이터를 기반으로 기술 키워드, 경쟁사 움직임, 반복 신호, 전략 시사점을 구조화해 보고서 초안 작성 시간을 줄입니다.</p>
                             </div>
-                        </div>
 
-                        <div class="guide-flow-strip">
-                            <div><strong>1. 수집</strong><span>RSS·Docs·뉴스</span></div>
-                            <div><strong>2. 선별</strong><span>검색·필터·중요 보관함</span></div>
-                            <div><strong>3. 요약</strong><span>필요 항목만 AI 분석</span></div>
-                            <div><strong>4. 해석</strong><span>대시보드·전략 시사점</span></div>
-                            <div><strong>5. 산출</strong><span>보고서·Discord 공유</span></div>
+                            <div class="intro-feature-card summary">
+                                <span class="feature-step">03</span>
+                                <h4>새 트렌드 본문 자동 요약</h4>
+                                <p>새 기사는 원문 본문을 확보한 뒤 로컬 Gemma가 자동 요약합니다. 본문이 부족하면 억지로 만들지 않고 확보 대기로 남깁니다.</p>
+                                <div class="feature-tags">
+                                    <span>AI 요약</span>
+                                    <span>검토 대기 5개</span>
+                                </div>
+                            </div>
+
+                            <div class="intro-feature-card editor">
+                                <span class="feature-step">04</span>
+                                <h4>편집장 판단</h4>
+                                <p>사용자가 카드를 업무 신호, 학습 신호, 노이즈로 확정합니다. 이 판단이 쌓일수록 AI가 어떤 신호를 좋아하는지 배웁니다.</p>
+                                <div class="feature-tags">
+                                    <span>업무 신호</span>
+                                    <span>학습 신호</span>
+                                    <span>노이즈</span>
+                                </div>
+                            </div>
+
+                            <div class="intro-feature-card asset">
+                                <span class="feature-step">05</span>
+                                <h4>보고서와 팀 자산화</h4>
+                                <p>확정된 업무 신호와 학습 신호, 요약 근거는 후보 작업대에서 빠지고, 대시보드·수집 원장·전략 보고서에서 다시 꺼내 쓰는 팀 자산이 됩니다.</p>
+                                <div class="feature-tags">
+                                    <span>보고서</span>
+                                    <span>팀 근거</span>
+                                    <span>전략 자산</span>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="guide-note-box bg-amber-glow">
@@ -740,7 +776,7 @@
                                 <span class="note-icon">⚙️</span>
                                 <strong>팀원에게 설명할 한 문장</strong>
                             </div>
-                            <p class="note-desc"><strong>개인별 관심사는 프로필로 분리하고, 수집 데이터와 전략 산출물은 팀 자산으로 축적합니다.</strong> 이 앱은 단순 뉴스 수집기가 아니라 솔루션전략팀의 경쟁사·기술 신호 관측소입니다.</p>
+                            <p class="note-desc"><strong>모든 기사를 사람이 읽는 앱이 아니라, AI가 후보를 만들고 사람이 업무 신호와 학습 신호를 확정하는 앱입니다.</strong> 확정된 신호와 요약 근거는 솔루션전략팀의 경쟁사·기술 신호 자산으로 누적됩니다.</p>
                         </div>
                     </div>
                 </div>
@@ -751,7 +787,7 @@
                 <header class="content-header">
                     <div class="header-titles">
                         <h2>사용 가이드</h2>
-                        <p class="subtitle">팀원이 처음 접속해 개인 프로필을 만들고, 관심 기술을 모니터링하고, 필요한 자료를 보관·요약·보고서화하는 흐름을 안내합니다.</p>
+                        <p class="subtitle">자동 수집으로 자료가 쌓이고, AI 후보 정리와 요약을 거쳐 사람이 업무 신호와 학습 신호를 확정하는 전체 흐름을 안내합니다.</p>
                     </div>
                 </header>
 
@@ -836,31 +872,31 @@
                     </details>
 
                     <details class="guide-phase-details">
-                        <summary class="guide-phase-summary">Phase 3: 스캔하고 새 소식 확인하기</summary>
+                        <summary class="guide-phase-summary">Phase 3: 자동 수집으로 자료 쌓기</summary>
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Auto</span><h3>주기별 자동 수집</h3></div>
+                                    <div class="guide-panel-body">
+                                        <p><strong>주기별 자동 수집</strong>을 켜두면 서버가 실행 중일 때 설정한 주기마다 RSS, 경쟁사 문서, 키워드 뉴스를 확인합니다. 자동 수집은 자료를 쌓는 단계이고, AI 요약이나 신호 확정과는 별개의 기능입니다.</p>
+                                    </div>
+                                </div>
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Manual</span><h3>지금 수동 수집</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>좌측 <strong>지금 수동 수집</strong>은 자동 주기를 기다리지 않고 즉시 한 번 수집하는 버튼입니다. 자동 수집은 서버가 켜져 있는 동안 설정된 주기에 맞춰 별도로 실행됩니다.</p>
+                                        <p>좌측 <strong>지금 수동 수집</strong>은 자동 주기를 기다리지 않고 즉시 한 번 수집하는 버튼입니다. 새로운 키워드를 추가했거나 회의 전에 최신 자료가 필요할 때 사용합니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Feed</span><h3>모니터링 피드 보기</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Raw</span><h3>수집 원장 확인</h3></div>
                                     <div class="guide-panel-body">
-                                        <p><strong>모니터링 피드</strong>에서는 경쟁사 업데이트, 기술 레퍼런스, 기술 트렌드 뉴스를 한 곳에서 봅니다. 검색창과 유형 필터로 필요한 항목만 좁혀 볼 수 있습니다.</p>
+                                        <p><strong>수집 원장</strong>에는 수집된 원본 목록이 모두 남습니다. 발행일과 수집일을 구분해 최신성을 확인하고, 필요하면 검색이나 필터로 원문 자료를 다시 찾습니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Summary</span><h3>필요한 것만 AI 요약</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Next</span><h3>수집 후에는 후보 정리로 이동</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>모든 글을 자동으로 AI 요약하지 않습니다. 먼저 제목, 날짜, 링크를 보고 중요해 보이는 항목에서 <strong>AI 요약 생성</strong>을 눌러 핵심 내용만 분석합니다.</p>
-                                    </div>
-                                </div>
-                                <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Star</span><h3>중요 항목 보관</h3></div>
-                                    <div class="guide-panel-body">
-                                        <p>전략적으로 의미 있는 글은 별표로 저장합니다. 보관한 항목은 <strong>중요 보관함</strong>에서 다시 볼 수 있고, 회의 준비나 보고서 작성의 근거 자료로 활용할 수 있습니다.</p>
+                                        <p>수집이 끝났다고 바로 모든 기사를 읽을 필요는 없습니다. 다음 단계에서 <strong>후보 정리</strong>로 이동해 새로 올라온 검토 대기 항목만 처리합니다.</p>
                                     </div>
                                 </div>
                             </div>
@@ -868,25 +904,25 @@
                     </details>
 
                     <details class="guide-phase-details">
-                        <summary class="guide-phase-summary">Phase 4: 대시보드로 흐름 읽기</summary>
+                        <summary class="guide-phase-summary">Phase 4: AI 후보 정리와 요약</summary>
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">경쟁사</span><h3>경쟁사 동향 대시보드</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">AI 후보</span><h3>새 검토 대기만 처리하기</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>경쟁사별로 어떤 기술 태그가 자주 등장하는지, 최근 어떤 릴리즈나 블로그 업데이트가 있었는지 확인합니다. <strong>전략 시사점 보기</strong>를 열면 각 소식이 우리 제품이나 전략에 어떤 의미가 있는지 볼 수 있습니다.</p>
+                                        <p><strong>후보 정리</strong>의 <strong>AI 후보 정리</strong>를 누르면 최근 수집 항목 중 처리할 만한 카드가 <strong>검토 대기</strong>에 올라옵니다. 사용자가 업무 신호, 학습 신호, 노이즈로 확정하면 이 작업대에서는 사라집니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">기술</span><h3>기술 트렌드 대시보드</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Summary</span><h3>검토 대기 후보만 요약</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>수집된 기술 뉴스에서 자주 등장하는 키워드를 봅니다. 특정 키워드가 반복적으로 늘어나면 신기술 확산, 경쟁사 투자, 시장 관심 증가의 신호로 해석할 수 있습니다.</p>
+                                        <p>판단이 애매하면 <strong>검토 대기 5개 요약</strong>을 눌러 상위 후보 몇 개만 AI 요약합니다. 개별 카드의 <strong>AI 요약 생성</strong> 버튼으로 한 건씩 요약할 수도 있습니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">비교</span><h3>경쟁사 비교와 포지션 분석</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Tags</span><h3>세부 용도는 태그로 확인</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>대시보드는 단순 뉴스 목록이 아니라 경쟁사별 관심 기술, 출시 방향, 기술 레퍼런스 흐름을 비교하는 공간입니다. 우리 제품이 어떤 영역에서 앞서거나 뒤처지는지 판단하는 근거로 활용합니다.</p>
+                                        <p><strong>시장 신호</strong>, <strong>경쟁사</strong>, <strong>제품 힌트</strong>, <strong>RFP 근거</strong> 같은 용도는 칸이 아니라 카드 태그로 표시됩니다. 큰 판단은 업무 신호/학습 신호/노이즈로 단순하게 유지합니다.</p>
                                     </div>
                                 </div>
                             </div>
@@ -894,25 +930,31 @@
                     </details>
 
                     <details class="guide-phase-details">
-                        <summary class="guide-phase-summary">Phase 5: 보고서 만들기</summary>
+                        <summary class="guide-phase-summary">Phase 5: 편집장 판단과 팀 자산화</summary>
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Report</span><h3>주간/월간 보고서</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Editor</span><h3>업무 신호, 학습 신호, 노이즈로 판단</h3></div>
                                     <div class="guide-panel-body">
-                                        <p><strong>월간 전략 보고서</strong> 메뉴에서 주간 또는 월간 보고서를 생성합니다. 보고서는 반복 키워드, 경쟁사 움직임, 시장 신호, 전략 시사점을 구조화합니다.</p>
+                                        <p>담당 제품·제안·경쟁사 분석에 바로 연결되면 <strong>업무 신호</strong>, 직접 업무와 멀어도 기술 감각을 키우면 <strong>학습 신호</strong>, 관련성이 낮으면 <strong>노이즈</strong>로 보냅니다. 처리된 카드는 후보 정리 화면에서 빠지고, 결과는 대시보드와 수집 원장에 남습니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Scope</span><h3>보고서 범위 선택</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Report</span><h3>업무 신호 중심 보고서</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>전체 데이터를 볼 수도 있고, 특정 폴더 여러 개 또는 특정 키워드 여러 개만 골라 보고서를 만들 수도 있습니다. 특정 기술 주제나 경쟁사 비교 자료를 만들 때 유용합니다.</p>
+                                        <p><strong>전략 보고서</strong> 메뉴에서 주간 또는 월간 보고서를 생성합니다. v2에서는 사용자가 확정한 업무 신호와 요약된 근거를 보고서 품질을 높이는 핵심 재료로 사용합니다.</p>
+                                    </div>
+                                </div>
+                                <div class="guide-card-panel">
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Archive</span><h3>중요 보관함은 확정 신호 아카이브</h3></div>
+                                    <div class="guide-panel-body">
+                                        <p><strong>업무 신호</strong>나 <strong>학습 신호</strong>로 확정한 카드는 자동으로 <strong>중요 보관함</strong>에 저장됩니다. 수동으로 별표를 누른 자료도 함께 모여 보고서나 회의 준비에 다시 활용됩니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
                                     <div class="guide-panel-header"><span class="guide-step-badge">Export</span><h3>다운로드와 공유</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>생성된 보고서는 Markdown 또는 PDF로 내려받을 수 있습니다. 팀 채널 알림이 연결되어 있으면 보고서 생성 사실을 Discord로 공유할 수 있습니다.</p>
+                                        <p>생성된 보고서는 Markdown 또는 PDF로 내려받을 수 있습니다. Discord 알림이 연결되어 있으면 수집 결과나 보고서 생성 사실을 팀 채널로 공유할 수 있습니다.</p>
                                     </div>
                                 </div>
                             </div>
@@ -924,9 +966,9 @@
                         <div class="guide-phase-content">
                             <div class="guide-grid-layout">
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">AI</span><h3>AI는 필요한 항목에만 사용</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">AI</span><h3>AI는 초안, 사람은 최종 판단</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>스캔은 먼저 제목, 링크, 발행일, 수집일을 저장합니다. AI 요약은 중요해 보이는 항목에만 눌러서 사용합니다. 이렇게 하면 Gemini 사용량을 아끼면서 중요한 자료에 집중할 수 있습니다.</p>
+                                        <p>AI 후보 정리는 완성된 결론이 아니라 편집 초안입니다. 사용자가 업무 신호/학습 신호/노이즈로 고치는 과정이 쌓이면 다음 분류와 보고서 개선에 활용할 수 있습니다.</p>
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
@@ -936,9 +978,9 @@
                                     </div>
                                 </div>
                                 <div class="guide-card-panel">
-                                    <div class="guide-panel-header"><span class="guide-step-badge">Team</span><h3>보관과 요약은 팀의 근거 자료</h3></div>
+                                    <div class="guide-panel-header"><span class="guide-step-badge">Team</span><h3>확정 신호와 요약은 팀의 근거 자료</h3></div>
                                     <div class="guide-panel-body">
-                                        <p>중요 보관함에 담거나 AI 요약한 항목은 나중에 회의, 보고서, 경쟁사 비교, 제품 포지션 분석의 근거로 다시 활용됩니다.</p>
+                                        <p>업무 신호나 학습 신호로 확정하거나 AI 요약한 항목은 나중에 회의, 보고서, 경쟁사 비교, 제품 포지션 분석의 근거로 다시 활용됩니다.</p>
                                     </div>
                                 </div>
                             </div>
@@ -1034,7 +1076,7 @@
                             <span id="logs-status-text" class="status-badge idle js-status-text">대기 중 (Idle)</span>
                         </div>
                         <div class="action-buttons-group">
-                            <button id="start-report-btn" class="btn purple">📊 월간 전략 보고서 강제 컴파일</button>
+                            <button id="start-report-btn" class="btn purple">📊 전략 보고서 강제 생성</button>
                         </div>
                     </div>
 
@@ -1100,6 +1142,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260616-auto-scan-sidebar-ui"></script>
+    <script src="app.js?v=20260702-gemma-review-state"></script>
 </body>
 </html>

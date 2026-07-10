@@ -18,6 +18,7 @@ import apple_notes
 import monitors
 import discord_notifier
 import database
+import trend_pipeline
 
 # Import Google Antigravity SDK
 from google.antigravity import Agent, LocalAgentConfig
@@ -31,6 +32,10 @@ ALERT_FRESHNESS_HOURS = 168
 AUTO_AI_SUMMARY_ON_SCAN = False
 DOC_ITEMS_PER_FEED = 5
 TREND_ITEMS_PER_KEYWORD = 2
+TREND_CONTENT_PIPELINE_ENABLED = os.environ.get("TWT_TREND_PIPELINE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+TREND_CONTENT_PIPELINE_LIMIT = max(1, int(os.environ.get("TWT_TREND_PIPELINE_LIMIT", "10") or 10))
+TREND_CONTENT_FAILURE_WARNING_RATE = 0.30
+TREND_NEWS_PROVIDER = os.environ.get("TWT_TREND_NEWS_PROVIDER", "google_news").strip() or "google_news"
 ai_cooldown_until = None
 
 def is_quota_error(error_text: str) -> bool:
@@ -69,6 +74,166 @@ def pending_trend_analysis(article: dict, reason: str = "") -> dict:
         "analysis_status": "pending",
         "analysis_error": reason[:300]
     }
+
+def default_trend_pipeline_metadata(article: dict) -> dict:
+    return {
+        "original_url": "",
+        "source_url": article.get("link", ""),
+        "content_status": "not_attempted",
+        "content_error": "",
+        "content_chars": 0,
+        "content_extractor": "",
+        "content_resolver": "",
+        "summary_model": "",
+        "summary_evidence": [],
+    }
+
+def process_trend_article_content(profile_id: int, article: dict, keyword: str, existing_id: int = 0) -> dict:
+    """Resolve, extract and summarize one article without saving it."""
+    metadata = default_trend_pipeline_metadata(article)
+    try:
+        resolved = trend_pipeline.resolve_article_url(article.get("link", ""))
+        metadata["original_url"] = resolved["resolved_url"]
+        metadata["content_resolver"] = resolved["resolver"]
+        duplicate = database.find_scanned_trend_by_url(
+            profile_id,
+            link=article.get("link", ""),
+            original_url=resolved["resolved_url"],
+            exclude_id=existing_id or None,
+        )
+        if duplicate:
+            return {
+                "status": "duplicate",
+                "duplicate": duplicate,
+                "analysis": None,
+                "metadata": metadata,
+            }
+
+        extracted = trend_pipeline.extract_article_text(resolved["resolved_url"])
+        summarized = trend_pipeline.summarize_article_with_ollama(
+            title=article.get("title", ""),
+            source=article.get("source", "") or "News",
+            keyword=keyword,
+            article_text=extracted["body_text"],
+        )
+        analysis = {
+            "title": summarized["title"],
+            "summary": summarized["summary"],
+            "source": summarized["source"],
+            "analysis_status": "complete",
+            "analysis_error": "",
+        }
+        metadata.update({
+            "original_url": extracted["resolved_url"],
+            "content_status": "summarized",
+            "content_chars": extracted["body_chars"],
+            "content_extractor": extracted["extractor"],
+            "content_resolver": resolved["resolver"],
+            "summary_model": summarized["summary_model"],
+            "summary_evidence": summarized["evidence_points"],
+        })
+        return {"status": "summarized", "analysis": analysis, "metadata": metadata}
+    except trend_pipeline.TrendPipelineError as exc:
+        analysis = pending_trend_analysis(article, f"content_{exc.stage}: {exc}")
+        analysis["source"] = article.get("source", "") or "본문 확보 대기"
+        metadata["content_status"] = f"{exc.stage}_failed"
+        metadata["content_error"] = str(exc)[:300]
+        return {
+            "status": "failed",
+            "failed_stage": exc.stage,
+            "analysis": analysis,
+            "metadata": metadata,
+        }
+
+def queued_trend_to_article(item: dict) -> dict:
+    keyword = str(item.get("keyword", "") or "")
+    title = str(item.get("title", "") or "")
+    prefix = f"[{keyword}] "
+    if title.startswith(prefix):
+        title = title[len(prefix):]
+    return {
+        "title": title,
+        "link": item.get("source_url") or item.get("link", ""),
+        "description": item.get("summary", ""),
+        "source": item.get("source", ""),
+        "date": item.get("published_at", ""),
+    }
+
+def drain_queued_trend_content(profile_id: int, limit: int) -> dict:
+    """Process persisted cap-overflow rows before looking at fresh RSS items."""
+    counts = {"attempted": 0, "summarized": 0, "failed": 0, "duplicates": 0}
+    queued_items = database.get_queued_trends(profile_id, limit)
+    if queued_items:
+        print(f"[Trend Content] Draining {len(queued_items)} queued item(s) before fresh RSS results.")
+    for queued_item in queued_items:
+        article = queued_trend_to_article(queued_item)
+        keyword = queued_item.get("keyword", "")
+        counts["attempted"] += 1
+        outcome = process_trend_article_content(
+            profile_id,
+            article,
+            keyword,
+            existing_id=int(queued_item["id"]),
+        )
+        metadata = outcome["metadata"]
+        if outcome["status"] == "duplicate":
+            duplicate = outcome["duplicate"]
+            database.merge_scanned_trend_keyword(duplicate["id"], keyword)
+            database.update_scanned_trend_content(
+                int(queued_item["id"]),
+                keyword=keyword,
+                title=queued_item.get("title", ""),
+                link=metadata["original_url"] or queued_item.get("link", ""),
+                summary=queued_item.get("summary", ""),
+                source=queued_item.get("source", ""),
+                published_at=queued_item.get("published_at", ""),
+                analysis_status="complete",
+                analysis_error="duplicate_original_url",
+                original_url=metadata["original_url"],
+                source_url=metadata["source_url"],
+                content_status="duplicate",
+                content_error=f"duplicate_of:{duplicate['id']}",
+                content_resolver=metadata["content_resolver"],
+            )
+            counts["duplicates"] += 1
+            print(f"[Trend Content] Queued duplicate closed: {article['title']}")
+            continue
+
+        analysis = outcome["analysis"]
+        note_title = f"[{keyword}] {analysis['title']}"
+        if len(note_title) > 100:
+            note_title = note_title[:97] + "..."
+        updated = database.update_scanned_trend_content(
+            int(queued_item["id"]),
+            keyword=keyword,
+            title=note_title,
+            link=metadata["original_url"] or article["link"],
+            summary=article.get("description", "") if analysis.get("analysis_status") == "pending" else analysis["summary"],
+            source=analysis["source"],
+            published_at=queued_item.get("published_at", ""),
+            analysis_status=analysis.get("analysis_status", "complete"),
+            analysis_error=analysis.get("analysis_error", ""),
+            original_url=metadata["original_url"],
+            source_url=metadata["source_url"],
+            content_status=metadata["content_status"],
+            content_error=metadata["content_error"],
+            content_chars=metadata["content_chars"],
+            content_extractor=metadata["content_extractor"],
+            content_resolver=metadata["content_resolver"],
+            summary_model=metadata["summary_model"],
+            summary_evidence=metadata["summary_evidence"],
+        )
+        if not updated:
+            print(f"[Trend Content] Failed to update queued item {queued_item['id']} in place.")
+            counts["failed"] += 1
+            continue
+        if outcome["status"] == "summarized":
+            counts["summarized"] += 1
+            print(f"[Trend Content] Queued item summarized: {article['title']}")
+        else:
+            counts["failed"] += 1
+            print(f"[Trend Content] Queued item {outcome.get('failed_stage', 'content')} failed: {article['title']}")
+    return counts
 
 def parse_source_datetime(date_text: str):
     """Parse common RSS/Atom date formats into a timezone-aware datetime."""
@@ -679,28 +844,102 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
         
     print("\n--- 2. Scanning Web for Trend Keywords ---")
     existing_trends = set(database.get_scanned_trend_titles(profile_id))
+    content_pipeline_counts = {
+        "attempted": 0,
+        "summarized": 0,
+        "failed": 0,
+        "duplicates": 0,
+        "queued": 0,
+        "queued_completed": 0,
+        "noise_filtered": 0,
+    }
     if has_apple_notes:
         try:
             existing_trends.update(apple_notes.get_note_titles(folder_trends))
         except Exception:
             pass
+
+    # Drain persisted cap-overflow items first. Only rows explicitly marked
+    # "queued" are eligible, so the historical not_attempted backlog stays off.
+    if TREND_CONTENT_PIPELINE_ENABLED:
+        queued_counts = drain_queued_trend_content(profile_id, TREND_CONTENT_PIPELINE_LIMIT)
+        content_pipeline_counts["attempted"] += queued_counts["attempted"]
+        content_pipeline_counts["summarized"] += queued_counts["summarized"]
+        content_pipeline_counts["failed"] += queued_counts["failed"]
+        content_pipeline_counts["duplicates"] += queued_counts["duplicates"]
+        content_pipeline_counts["queued_completed"] += queued_counts["summarized"]
             
     for item in keywords:
         keyword = item["keyword"]
         folder = item.get("folder", "미분류")
         print(f"Searching keyword: '{keyword}' (Folder: {folder})...")
-        articles = monitors.search_google_news(keyword, recency_days=NEWS_RECENCY_DAYS)
+        articles = monitors.search_trend_news(
+            keyword,
+            recency_days=NEWS_RECENCY_DAYS,
+            provider=TREND_NEWS_PROVIDER,
+        )
         
         new_count = 0
         for article in articles[:TREND_ITEMS_PER_KEYWORD]: # Keep metadata-first scans lightweight
             title = f"[News] {article['title']}"
             # Check length or clean title to match existing titles
-            if any(t in title or title in t for t in existing_trends):
+            # The content pipeline deduplicates by source/original URL and merges
+            # matched keywords. Keep the legacy title check only for metadata scans.
+            if not TREND_CONTENT_PIPELINE_ENABLED and any(t in title or title in t for t in existing_trends):
                 continue
             published_at = normalize_source_date(article.get('date', ''))
             is_recent = is_recent_source_item(article.get('date', ''))
                 
-            if AUTO_AI_SUMMARY_ON_SCAN:
+            pipeline_metadata = default_trend_pipeline_metadata(article)
+
+            if TREND_CONTENT_PIPELINE_ENABLED:
+                duplicate = database.find_scanned_trend_by_url(profile_id, link=article.get("link", ""))
+                if duplicate:
+                    database.merge_scanned_trend_keyword(duplicate["id"], keyword)
+                    content_pipeline_counts["duplicates"] += 1
+                    print(f"[Trend Content] Duplicate source link skipped: {article['title']}")
+                    continue
+
+                noise_match = trend_pipeline.detect_obvious_search_noise(article)
+                keyword_mismatch = trend_pipeline.detect_keyword_mismatch_noise(article, keyword)
+                if noise_match or keyword_mismatch:
+                    filter_reason = f"title_term:{noise_match}" if noise_match else f"keyword_mismatch:{keyword_mismatch}"
+                    analysis = {
+                        "title": article.get("title", "제목 확인 필요"),
+                        "summary": article.get("description", "") or "검색 키워드와 제목/설명이 맞지 않아 요약을 생략했습니다.",
+                        "source": article.get("source", "") or "검색 노이즈",
+                        "analysis_status": "complete",
+                        "analysis_error": "",
+                    }
+                    pipeline_metadata["content_status"] = "noise_filtered"
+                    pipeline_metadata["content_error"] = filter_reason
+                    content_pipeline_counts["noise_filtered"] += 1
+                    print(f"[Trend Content] Search noise skipped before summary ({filter_reason}): {article['title']}")
+                elif content_pipeline_counts["attempted"] < TREND_CONTENT_PIPELINE_LIMIT:
+                    content_pipeline_counts["attempted"] += 1
+                    outcome = process_trend_article_content(profile_id, article, keyword)
+                    pipeline_metadata = outcome["metadata"]
+                    if outcome["status"] == "duplicate":
+                        duplicate = outcome["duplicate"]
+                        database.merge_scanned_trend_keyword(duplicate["id"], keyword)
+                        content_pipeline_counts["duplicates"] += 1
+                        print(f"[Trend Content] Duplicate original URL skipped: {article['title']}")
+                        continue
+                    analysis = outcome["analysis"]
+                    if outcome["status"] == "summarized":
+                        content_pipeline_counts["summarized"] += 1
+                        print(f"[Trend Content] Summarized: {article['title']} ({pipeline_metadata['content_chars']} chars)")
+                    else:
+                        content_pipeline_counts["failed"] += 1
+                        print(f"[Trend Content] {outcome.get('failed_stage', 'content')} failed: {article['title']}")
+                else:
+                    analysis = pending_trend_analysis(article, "content_queued: cycle processing limit reached")
+                    analysis["source"] = article.get("source", "") or "본문 처리 대기"
+                    pipeline_metadata["content_status"] = "queued"
+                    pipeline_metadata["content_error"] = "cycle_processing_limit"
+                    content_pipeline_counts["queued"] += 1
+                    print(f"[Trend Content] Queued for next cycle: {article['title']}")
+            elif AUTO_AI_SUMMARY_ON_SCAN:
                 analysis = await analyze_news_trend(agent, keyword, article)
             else:
                 analysis = pending_trend_analysis(article, "metadata_only_scan")
@@ -718,16 +957,26 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                 profile_id=profile_id,
                 keyword=keyword,
                 title=note_title,
-                link=article['link'],
+                link=pipeline_metadata["original_url"] or article['link'],
                 summary=article.get('description', '') if analysis.get("analysis_status") == "pending" else analysis['summary'],
                 source=analysis['source'],
                 published_at=published_at,
                 analysis_status=analysis.get("analysis_status", "complete"),
-                analysis_error=analysis.get("analysis_error", "")
+                analysis_error=analysis.get("analysis_error", ""),
+                original_url=pipeline_metadata["original_url"],
+                source_url=pipeline_metadata["source_url"],
+                content_status=pipeline_metadata["content_status"],
+                content_error=pipeline_metadata["content_error"],
+                content_chars=pipeline_metadata["content_chars"],
+                content_extractor=pipeline_metadata["content_extractor"],
+                content_resolver=pipeline_metadata["content_resolver"],
+                summary_model=pipeline_metadata["summary_model"],
+                summary_evidence=pipeline_metadata["summary_evidence"],
             )
             
             if saved:
                 new_count += 1
+                existing_trends.add(note_title)
                 
                 # Save to Apple Notes (macOS Fallback)
                 if has_apple_notes:
@@ -748,7 +997,14 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         print(f"[Apple Notes Error] Failed to write note: {e}")
                 
                 # Send Discord Notification. Metadata-first scans still notify that a new item was collected.
-                if webhook_url and is_recent:
+                should_notify_complete = (
+                    analysis.get("analysis_status") == "complete"
+                    and (
+                        not TREND_CONTENT_PIPELINE_ENABLED
+                        or pipeline_metadata["content_status"] == "summarized"
+                    )
+                )
+                if webhook_url and is_recent and should_notify_complete:
                     sent = discord_notifier.send_trend_alert(
                         webhook_url,
                         keyword,
@@ -759,9 +1015,32 @@ async def run_monitoring_scan_for_profile(agent: Agent, profile: dict):
                         format_source_date_for_note(article.get('date', ''))
                     )
                     print(f"[Discord] Trend alert {'sent' if sent else 'failed'}: {analysis['title']}")
+                elif webhook_url and analysis.get("analysis_status") != "complete":
+                    print(f"Skipping Discord trend alert because the article is waiting for content: {article['title']}")
+                elif webhook_url and pipeline_metadata["content_status"] == "noise_filtered":
+                    print(f"Skipping Discord trend alert because obvious search noise was filtered: {article['title']}")
                 elif webhook_url:
                     print(f"Skipping Discord trend alert because source date is older than {ALERT_FRESHNESS_HOURS} hours or missing: {article.get('date', '')}")
         print(f"-> Logged {new_count} new trend items for '{keyword}'.")
+
+    if TREND_CONTENT_PIPELINE_ENABLED:
+        attempts = content_pipeline_counts["attempted"]
+        failures = content_pipeline_counts["failed"]
+        failure_rate = failures / attempts if attempts else 0.0
+        print(
+            "[Trend Content] Scan summary: "
+            f"attempted={attempts}, summarized={content_pipeline_counts['summarized']}, "
+            f"failed={failures}, duplicates={content_pipeline_counts['duplicates']}, "
+            f"queued={content_pipeline_counts['queued']}, "
+            f"queued_completed={content_pipeline_counts['queued_completed']}, "
+            f"noise_filtered={content_pipeline_counts['noise_filtered']}, "
+            f"failure_rate={failure_rate:.1%}"
+        )
+        if attempts >= 5 and failure_rate >= TREND_CONTENT_FAILURE_WARNING_RATE:
+            print(
+                "[Trend Content WARNING] Failure rate is above 30%. "
+                "Keep automatic activation paused and inspect resolver/extractor logs."
+            )
 
 def get_report_period(report_type: str) -> str:
     now = datetime.now()
